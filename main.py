@@ -589,3 +589,4 @@ if __name__ == "__main__":
     janela = MainWindow()
     janela.show()
     sys.exit(app.exec())
+#finalizado
