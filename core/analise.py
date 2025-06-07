@@ -1,21 +1,16 @@
-# core/analise.py
-
 import numpy as np
 
 def montar_matriz(componentes, frequencia):
     """
-    Monta o sistema de equações nodais para análise CA usando impedâncias complexas.
-    Retorna:
-    - V: tensões nos nós
-    - mapa_nos: mapeamento de nome → índice
-    - correntes: lista de dicionários com correntes por componente
+    Monta a matriz nodal G e o vetor de fontes I para análise de CA.
+    Suporta R, L, C, Z (impedância), e fontes V com fase.
     """
-    # Mapear nós e criar índices
+    # Coletar nós
     nos = set()
     for comp in componentes:
         nos.add(comp["n1"])
         nos.add(comp["n2"])
-    nos.discard("0")  # nó terra
+    nos.discard("0")
     nos = sorted(nos)
     mapa_nos = {n: i for i, n in enumerate(nos)}
 
@@ -25,20 +20,24 @@ def montar_matriz(componentes, frequencia):
     w = 2 * np.pi * frequencia
 
     for comp in componentes:
+        tipo = comp["tipo"].upper()
         n1 = comp["n1"]
         n2 = comp["n2"]
-        tipo = comp["tipo"].upper()
         val = comp["valor"]
 
-        y = 0
+        # Admitância
         if tipo == 'R':
             y = 1 / val
         elif tipo == 'L':
             y = 1 / (1j * w * val)
         elif tipo == 'C':
             y = 1j * w * val
+        elif tipo == 'Z':  # suporte real para MOTOR_Y/D
+            y = 1 / val
+        else:
+            y = 0
 
-        if tipo in ['R', 'L', 'C']:
+        if tipo in ['R', 'L', 'C', 'Z']:
             if n1 != '0':
                 i = mapa_nos[n1]
                 G[i, i] += y
@@ -59,18 +58,19 @@ def montar_matriz(componentes, frequencia):
             if n2 != '0':
                 I[mapa_nos[n2]] -= fonte
 
-    # Resolver G.V = I
-    V = np.linalg.solve(G, I)
-
-    # DEBUG opcional
     print("\n--- MATRIZ G ---")
     print(G)
     print("\n--- VETOR I ---")
     print(I)
-    print("\n--- TENSÕES CALCULADAS (V) ---")
+
+    if np.linalg.matrix_rank(G) < len(G):
+        raise ValueError("Matriz singular: circuito mal conectado ou sem referência.")
+
+    V = np.linalg.solve(G, I)
+
+    print("\n--- TENSÕES CALCULADAS ---")
     print(V)
 
-    # Calcular correntes por componente
     correntes = []
     for comp in componentes:
         tipo = comp["tipo"].upper()
@@ -79,10 +79,9 @@ def montar_matriz(componentes, frequencia):
         n2 = comp["n2"]
         val = comp["valor"]
 
-        if tipo in ['R', 'L', 'C']:
+        if tipo in ['R', 'L', 'C', 'Z']:
             v1 = V[mapa_nos[n1]] if n1 != '0' else 0
             v2 = V[mapa_nos[n2]] if n2 != '0' else 0
-            Z = None
 
             if tipo == 'R':
                 Z = val
@@ -90,8 +89,12 @@ def montar_matriz(componentes, frequencia):
                 Z = 1j * w * val
             elif tipo == 'C':
                 Z = 1 / (1j * w * val)
+            elif tipo == 'Z':
+                Z = val
+            else:
+                Z = 1
 
-            Icomp = (v1 - v2) / Z
-            correntes.append({"nome": f"I_{nome}", "valor": Icomp})
+            corrente = (v1 - v2) / Z
+            correntes.append({"nome": f"I_{nome}", "valor": corrente})
 
     return V, mapa_nos, correntes

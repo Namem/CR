@@ -1,13 +1,14 @@
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit,
-    QPushButton, QLabel, QMessageBox, QHBoxLayout, QTableWidget, QTableWidgetItem
+    QPushButton, QLabel, QMessageBox, QHBoxLayout, QTableWidget, QTableWidgetItem,
+    QComboBox, QLineEdit, QFormLayout
 )
 import sys
+import numpy as np
 
 from netlist_parser import parser
 from core import analise
 from interface.canvas import MplCanvas
-import numpy as np
 
 
 class MainWindow(QMainWindow):
@@ -24,27 +25,25 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        # Aba Netlist
+        # Abas
         self.tab_netlist = QWidget()
-        self.tabs.addTab(self.tab_netlist, "📝 Netlist")
-        self.setup_netlist_tab()
-
-        # Aba Resultados
         self.tab_resultados = QWidget()
+        self.tab_fasores = QWidget()
+        self.tab_ondas = QWidget()
+
+        self.tabs.addTab(self.tab_netlist, "📝 Netlist")
         self.tabs.addTab(self.tab_resultados, "⚡ Resultados")
+        self.tabs.addTab(self.tab_fasores, "📊 Fasores")
+        self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
+
+        self.setup_netlist_tab()
         self.setup_resultados_tab()
 
-        # Aba Fasores
-        self.tab_fasores = QWidget()
-        self.tabs.addTab(self.tab_fasores, "📊 Fasores")
         self.fasor_canvas = MplCanvas()
         layout_fasor = QVBoxLayout()
         layout_fasor.addWidget(self.fasor_canvas)
         self.tab_fasores.setLayout(layout_fasor)
 
-        # Aba Ondas
-        self.tab_ondas = QWidget()
-        self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
         self.onda_canvas = MplCanvas()
         layout_ondas = QVBoxLayout()
         layout_ondas.addWidget(self.onda_canvas)
@@ -55,7 +54,7 @@ class MainWindow(QMainWindow):
 
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText(
-            "Digite sua netlist estilo SPICE:\nExemplo:\nV1 n1 0 AC 120 0\nR1 n1 n2 50\n..."
+            "Digite sua netlist estilo SPICE:\nExemplo:\nV1 A 0 AC 220 0\nR1 A B 50\n..."
         )
         layout.addWidget(self.text_edit)
 
@@ -63,14 +62,79 @@ class MainWindow(QMainWindow):
         btn_analisar.clicked.connect(self.analisar)
         layout.addWidget(btn_analisar)
 
+        layout.addWidget(QLabel("Adicionar Motor Trifásico"))
+
+        form = QFormLayout()
+        self.tipo_motor = QComboBox()
+        self.tipo_motor.addItems(["Estrela (Y)", "Triângulo (Δ)"])
+
+        self.noA = QLineEdit("A")
+        self.noB = QLineEdit("B")
+        self.noC = QLineEdit("C")
+        self.noN = QLineEdit("N")
+        self.potencia = QLineEdit("3000")
+        self.fp = QLineEdit("0.9")
+
+        form.addRow("Tipo de Ligação:", self.tipo_motor)
+        form.addRow("Nó A:", self.noA)
+        form.addRow("Nó B:", self.noB)
+        form.addRow("Nó C:", self.noC)
+        form.addRow("Nó Neutro (Y apenas):", self.noN)
+        form.addRow("Potência (W):", self.potencia)
+        form.addRow("Fator de Potência:", self.fp)
+
+        layout.addLayout(form)
+
+        btn_inserir_motor = QPushButton("➕ Inserir Motor na Netlist")
+        btn_inserir_motor.clicked.connect(self.inserir_motor_netlist)
+        layout.addWidget(btn_inserir_motor)
+
         self.tab_netlist.setLayout(layout)
+
+    def inserir_motor_netlist(self):
+        tipo = self.tipo_motor.currentText()
+        a = self.noA.text().strip()
+        b = self.noB.text().strip()
+        c = self.noC.text().strip()
+        n = self.noN.text().strip()
+        p = self.potencia.text().strip()
+        fp = self.fp.text().strip()
+        nome_motor = f"M{np.random.randint(100,999)}"
+
+        if tipo.startswith("Estrela"):
+            motor_line = f"MOTOR_Y {nome_motor} {a} {b} {c} {n} {p} {fp}"
+        else:
+            motor_line = f"MOTOR_D {nome_motor} {a} {b} {c} {p} {fp}"
+
+        # Fontes trifásicas
+        fontes = [
+            f"V1 {a} 0 AC 220 0",
+            f"V2 {b} 0 AC 220 -120",
+            f"V3 {c} 0 AC 220 120",
+        ]
+
+        extra = []
+        if tipo.startswith("Estrela"):
+            extra.append(f"RNEUTRO {n} 0 0.001")
+
+        texto_atual = self.text_edit.toPlainText().strip().splitlines()
+        linhas_existentes = set(l.strip().split()[0] for l in texto_atual)
+
+        novas_linhas = []
+        for v in fontes:
+            if v.split()[0] not in linhas_existentes:
+                novas_linhas.append(v)
+
+        novas_linhas.append(motor_line)
+        novas_linhas += extra
+
+        texto_final = "\n".join(texto_atual + novas_linhas)
+        self.text_edit.setText(texto_final)
 
     def setup_resultados_tab(self):
         layout = QVBoxLayout()
-
         self.tabela = QTableWidget()
         layout.addWidget(self.tabela)
-
         self.tab_resultados.setLayout(layout)
 
     def analisar(self):
@@ -90,8 +154,7 @@ class MainWindow(QMainWindow):
             self.atualizar_tabela()
             self.plotar_fasores(todos)
             self.plotar_ondas(todos)
-
-            self.tabs.setCurrentIndex(1)  # vai direto para aba de resultados
+            self.tabs.setCurrentIndex(1)
 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Falha na análise:\n{e}")
