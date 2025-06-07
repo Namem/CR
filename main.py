@@ -4,14 +4,13 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QMessageBox, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QLineEdit, QFormLayout, QHeaderView, QFileDialog,
-    QListWidget, QListWidgetItem, QGraphicsView, QGraphicsLineItem
+    QListWidget, QListWidgetItem, QGraphicsView
 )
-from PySide6.QtGui import QAction, QColor, QTextCursor, QTextCharFormat, QPainter, QPen
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtGui import QAction, QColor, QTextCursor, QTextCharFormat
+from PySide6.QtCore import Qt
 import sys
 import numpy as np
 import csv
-from collections import defaultdict, deque
 
 # Importe os módulos do projeto
 from netlist_parser import parser
@@ -20,153 +19,89 @@ from interface.canvas import MplCanvas
 from graphics import fasores, ondas
 from interface.schematic_scene import SchematicScene
 from schematic.node_item import NodeItem
-from schematic.resistor_item import ResistorItem
-from schematic.vsource_item import VSourceItem
-from schematic.inductor_item import InductorItem
-from schematic.capacitor_item import CapacitorItem
-from schematic.impedance_item import ImpedanceItem
 
 class MainWindow(QMainWindow):
-    # (O __init__ e outras funções que não mudam foram omitidos para brevidade)
-    # ...
     def __init__(self):
-        super().__init__(); self.setWindowTitle("Choque de Realidade - Analisador CA"); self.setGeometry(100, 100, 1200, 800)
+        super().__init__()
+        self.setWindowTitle("Choque de Realidade - Analisador CA")
+        self.setGeometry(100, 100, 1100, 750)
+
         self._create_menu_bar()
-        self.componentes = []; self.frequencia = 60; self.tensoes = {}; self.correntes = {}; self.potencias = {}; self.todos_sinais = []
-        self.tabs = QTabWidget(); self.setCentralWidget(self.tabs)
-        self.tab_netlist = QWidget(); self.tab_resultados = QWidget(); self.tab_esquematico = QWidget(); self.tab_fasores = QWidget(); self.tab_ondas = QWidget()
-        self.tabs.addTab(self.tab_netlist, "📝 Netlist"); self.tabs.addTab(self.tab_resultados, "⚡ Resultados"); self.tabs.addTab(self.tab_esquematico, "✍️ Esquemático"); self.tabs.addTab(self.tab_fasores, "📊 Fasores"); self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
-        self.setup_netlist_tab(); self.setup_resultados_tab(); self.setup_esquematico_tab(); self.setup_graficos_tab(self.tab_fasores, "fasores"); self.setup_graficos_tab(self.tab_ondas, "ondas")
-
-    # --- MÉTODO REESCRITO COM O NOVO ALGORITMO DE LAYOUT HIERÁRQUICO ---
-    def desenhar_esquematico(self):
-        self.scene.clear()
         
-        all_nodes = list(self.tensoes.keys())
-        if not all_nodes: return
+        # (O resto do __init__ permanece o mesmo)
+        self.componentes = []
+        self.frequencia = 60
+        self.tensoes = {}
+        self.correntes = {}
+        self.potencias = {}
+        self.todos_sinais = []
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+        self.tab_netlist = QWidget()
+        self.tab_resultados = QWidget()
+        self.tab_esquematico = QWidget() # Adicionado para consistência
+        self.tab_fasores = QWidget()
+        self.tab_ondas = QWidget()
+        self.tabs.addTab(self.tab_netlist, "📝 Netlist")
+        self.tabs.addTab(self.tab_resultados, "⚡ Resultados")
+        self.tabs.addTab(self.tab_esquematico, "✍️ Esquemático") # Adicionado para consistência
+        self.tabs.addTab(self.tab_fasores, "📊 Fasores")
+        self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
+        self.setup_netlist_tab()
+        self.setup_resultados_tab()
+        self.setup_esquematico_tab() # Chamada que estava causando o erro
+        self.setup_graficos_tab(self.tab_fasores, "fasores")
+        self.setup_graficos_tab(self.tab_ondas, "ondas")
 
-        # 1. Construir a lista de adjacências do grafo
-        adj = defaultdict(list)
-        for comp in self.componentes:
-            adj[comp['n1']].append(comp['n2'])
-            adj[comp['n2']].append(comp['n1'])
-
-        # 2. Calcular níveis (distância do nó '0') usando BFS
-        levels = {node: -1 for node in all_nodes}
-        max_level = 0
-        if '0' in all_nodes:
-            queue = deque([('0', 0)])
-            visited = {'0'}
-            levels['0'] = 0
-            
-            while queue:
-                curr_node, level = queue.popleft()
-                max_level = max(max_level, level)
-                for neighbor in adj[curr_node]:
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        levels[neighbor] = level + 1
-                        queue.append((neighbor, level + 1))
-        
-        # Atribuir níveis para nós desconectados (se houver)
-        level_unconnected = max_level + 1
-        for node in all_nodes:
-            if levels[node] == -1:
-                levels[node] = level_unconnected
-                level_unconnected += 1
-        
-        # 3. Organizar nós por nível
-        nodes_by_level = defaultdict(list)
-        for node, level in levels.items():
-            nodes_by_level[level].append(node)
-
-        # 4. Calcular posições na grade
-        node_positions = {}
-        y_step, x_step = 150, 200
-        for level, nodes_in_level in sorted(nodes_by_level.items()):
-            y = -level * y_step
-            width = (len(nodes_in_level) - 1) * x_step
-            start_x = -width / 2
-            for i, node_name in enumerate(sorted(nodes_in_level)):
-                x = start_x + i * x_step
-                node_positions[node_name] = QPointF(x, y)
-                self.scene.addItem(NodeItem(node_name, x, y))
-
-        # 5. Desenhar componentes e fios (mesma lógica de antes, mas com novas posições)
-        parallel_groups = defaultdict(list)
-        for comp in self.componentes:
-            key = tuple(sorted((comp['n1'], comp['n2'])))
-            parallel_groups[key].append(comp)
-        
-        wire_pen = QPen(QColor(160, 160, 160), 1)
-        for node_pair, comps in parallel_groups.items():
-            n1, n2 = node_pair
-            if n1 not in node_positions or n2 not in node_positions: continue
-                
-            pos1, pos2 = node_positions[n1], node_positions[n2]
-            line_vec = pos2 - pos1
-            perp_vec = QPointF(-line_vec.y(), line_vec.x())
-            norm_perp_vec = perp_vec / np.sqrt(perp_vec.x()**2 + perp_vec.y()**2) if (perp_vec.x()**2 + perp_vec.y()**2) > 0 else QPointF(0,0)
-
-            for i, comp in enumerate(comps):
-                offset_dist = 40
-                shift = (i - (len(comps) - 1) / 2.0) * offset_dist
-                offset = norm_perp_vec * shift
-                mid_point = ((pos1 + pos2) / 2) + offset
-                
-                comp_item = self.criar_item_componente(comp)
-                if comp_item:
-                    angle_rad = np.arctan2(line_vec.y(), line_vec.x())
-                    angle_deg = np.rad2deg(angle_rad)
-                    comp_item.setPos(mid_point)
-                    comp_item.setRotation(angle_deg)
-                    self.scene.addItem(comp_item)
-                    
-                    term1, term2 = comp_item.get_terminals()
-                    scene_term1, scene_term2 = comp_item.mapToScene(term1), comp_item.mapToScene(term2)
-                    
-                    wire1 = QGraphicsLineItem(pos1.x(), pos1.y(), scene_term1.x(), scene_term1.y()); wire1.setPen(wire_pen); self.scene.addItem(wire1)
-                    wire2 = QGraphicsLineItem(pos2.x(), pos2.y(), scene_term2.x(), scene_term2.y()); wire2.setPen(wire_pen); self.scene.addItem(wire2)
-
-        self.view.fitInView(self.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+    # --- FUNÇÃO QUE FALTAVA, ADICIONADA DE VOLTA ---
+    def setup_esquematico_tab(self):
+        layout = QVBoxLayout(self.tab_esquematico)
+        self.scene = SchematicScene()
+        self.view = QGraphicsView(self.scene)
+        # O RenderHint precisa do QPainter, que já deve estar importado
+        from PySide6.QtGui import QPainter
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        layout.addWidget(self.view)
 
     # (O restante do código de main.py permanece o mesmo da versão anterior)
-    def criar_item_componente(self, comp):
-        tipo = comp['tipo']
-        if tipo == 'V': return VSourceItem(comp['nome'], f"{comp['valor']}V")
-        elif tipo == 'R': return ResistorItem(comp['nome'], f"{comp['valor']}Ω")
-        elif tipo == 'L': return InductorItem(comp['nome'], f"{comp['valor']}H")
-        elif tipo == 'C': return CapacitorItem(comp['nome'], f"{comp['valor']}F")
-        elif tipo == 'Z': return ImpedanceItem(comp['nome'], f"{comp['valor']}Ω")
-        return None
-    def __init__(self):
-        super().__init__(); self.setWindowTitle("Choque de Realidade - Analisador CA"); self.setGeometry(100, 100, 1200, 800)
-        self._create_menu_bar()
-        self.componentes = []; self.frequencia = 60; self.tensoes = {}; self.correntes = {}; self.potencias = {}; self.todos_sinais = []
-        self.tabs = QTabWidget(); self.setCentralWidget(self.tabs)
-        self.tab_netlist = QWidget(); self.tab_resultados = QWidget(); self.tab_esquematico = QWidget(); self.tab_fasores = QWidget(); self.tab_ondas = QWidget()
-        self.tabs.addTab(self.tab_netlist, "📝 Netlist"); self.tabs.addTab(self.tab_resultados, "⚡ Resultados"); self.tabs.addTab(self.tab_esquematico, "✍️ Esquemático"); self.tabs.addTab(self.tab_fasores, "📊 Fasores"); self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
-        self.setup_netlist_tab(); self.setup_resultados_tab(); self.setup_esquematico_tab(); self.setup_graficos_tab(self.tab_fasores, "fasores"); self.setup_graficos_tab(self.tab_ondas, "ondas")
-    def setup_esquematico_tab(self):
-        layout = QVBoxLayout(self.tab_esquematico); self.scene = SchematicScene(); self.view = QGraphicsView(self.scene)
-        self.view.setRenderHint(QPainter.RenderHint.Antialiasing); layout.addWidget(self.view)
-    def analisar(self):
-        self.limpar_destaque(); texto = self.text_edit.toPlainText()
-        if not texto.strip(): QMessageBox.warning(self, "Aviso", "A netlist está vazia."); return
-        try:
-            self.componentes = parser.parse_netlist_linhas(texto.strip().split('\n'))
-            self.tensoes, self.correntes, self.potencias = analise.montar_matriz_anm(self.componentes, self.frequencia)
-            self.todos_sinais = []; self.todos_sinais.extend([{"nome": f"V({n})", "valor": v} for n, v in self.tensoes.items() if n != '0']); self.todos_sinais.extend([{"nome": f"I({n})", "valor": i} for n, i in self.correntes.items()])
-            self.atualizar_tabela(); self.desenhar_esquematico(); self.popular_listas_de_sinais(); self.atualizar_graficos(); self.tabs.setCurrentIndex(1)
-        except parser.NetlistParseError as e:
-            QMessageBox.critical(self, "Erro na Netlist", str(e)); self.destacar_linha_erro(e.line_number)
-        except Exception as e:
-            QMessageBox.critical(self, "Erro na Análise", f"Ocorreu um erro inesperado:\n{e}")
     def _create_menu_bar(self):
         menu_bar = self.menuBar(); menu_arquivo = menu_bar.addMenu("&Arquivo")
         abrir_action = QAction("&Abrir Netlist...", self); abrir_action.triggered.connect(self.abrir_arquivo); menu_arquivo.addAction(abrir_action)
         salvar_action = QAction("&Salvar Netlist Como...", self); salvar_action.triggered.connect(self.salvar_arquivo_como); menu_arquivo.addAction(salvar_action)
         menu_arquivo.addSeparator(); sair_action = QAction("&Sair", self); sair_action.triggered.connect(self.close); menu_arquivo.addAction(sair_action)
+        menu_ajuda = menu_bar.addMenu("&Ajuda"); sobre_action = QAction("&Sobre o Choque de Realidade", self)
+        sobre_action.triggered.connect(self.mostrar_janela_ajuda); menu_ajuda.addAction(sobre_action)
+
+    def mostrar_janela_ajuda(self):
+        titulo = "Sobre o Choque de Realidade - Analisador CA"
+        texto = """
+        <p><b>Choque de Realidade</b> é um analisador de circuitos de corrente alternada (CA) 
+        desenvolvido para fins educacionais e técnicos.</p>
+        <h3>Funcionalidades Principais:</h3>
+        <ul>
+            <li><b>Análise Nodal Modificada (ANM):</b> Capaz de resolver qualquer topologia de circuito.</li>
+            <li><b>Suporte a Componentes:</b> R, L, C, Z, fontes de tensão independentes e 
+            fontes dependentes (VCVS, VCCS, CCCS, CCVS).</li>
+            <li><b>Resultados Completos:</b> Calcula tensões, correntes e potências complexas (P, Q, S, FP).</li>
+            <li><b>Visualização Gráfica:</b> Gera automaticamente um esquemático do circuito, 
+            diagrama de fasores e formas de onda.</li>
+            <li><b>Recursos de Usabilidade:</b> Suporte a unidades (k, m, u), Abrir/Salvar netlists, 
+            Exportar resultados para CSV e destaque de erros na netlist.</li>
+        </ul>
+        <h3>Como Usar:</h3>
+        <ol>
+            <li><b>Escreva a Netlist:</b> Digite ou cole o seu circuito na aba "Netlist" 
+            usando o formato SPICE (ex: <code>R1 A B 1k</code>).</li>
+            <li><b>Analise:</b> Clique no botão "Analisar Circuito".</li>
+            <li><b>Explore:</b> Navegue pelas abas "Resultados", "Esquemático", "Fasores" e "Ondas" 
+            para visualizar a análise completa.</li>
+        </ol>
+        <p><i>Desenvolvido para a materia de Circuitos II</i></p>
+        <p><i>NR</p>
+        
+        """
+        QMessageBox.about(self, titulo, texto)
+
     def abrir_arquivo(self):
         caminho, _ = QFileDialog.getOpenFileName(self, "Abrir Netlist", "", "Netlist Files (*.net *.txt);;All Files (*)")
         if caminho:
@@ -215,6 +150,18 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(); self.tabela = QTableWidget(); layout.addWidget(self.tabela)
         btn_exportar = QPushButton("💾 Exportar para CSV"); btn_exportar.clicked.connect(self.exportar_para_csv)
         hbox = QHBoxLayout(); hbox.addStretch(1); hbox.addWidget(btn_exportar); layout.addLayout(hbox); self.tab_resultados.setLayout(layout)
+    def analisar(self):
+        self.limpar_destaque(); texto = self.text_edit.toPlainText()
+        if not texto.strip(): QMessageBox.warning(self, "Aviso", "A netlist está vazia."); return
+        try:
+            self.componentes = parser.parse_netlist_linhas(texto.strip().split('\n'))
+            self.tensoes, self.correntes, self.potencias = analise.montar_matriz_anm(self.componentes, self.frequencia)
+            self.todos_sinais = []; self.todos_sinais.extend([{"nome": f"V({n})", "valor": v} for n, v in self.tensoes.items() if n != '0']); self.todos_sinais.extend([{"nome": f"I({n})", "valor": i} for n, i in self.correntes.items()])
+            self.atualizar_tabela(); self.desenhar_esquematico(); self.popular_listas_de_sinais(); self.atualizar_graficos(); self.tabs.setCurrentIndex(1)
+        except parser.NetlistParseError as e:
+            QMessageBox.critical(self, "Erro na Netlist", str(e)); self.destacar_linha_erro(e.line_number)
+        except Exception as e:
+            QMessageBox.critical(self, "Erro na Análise", f"Ocorreu um erro inesperado:\n{e}")
     def popular_listas_de_sinais(self):
         self.lista_sinais_fasores.clear(); self.lista_sinais_ondas.clear()
         for sinal in self.todos_sinais:
@@ -235,6 +182,57 @@ class MainWindow(QMainWindow):
         if dados_ondas: ondas.plotar_ondas(self.ondas_canvas.ax, dados_ondas, f=self.frequencia)
         else: self.ondas_canvas.clear()
         self.ondas_canvas.draw()
+    def desenhar_esquematico(self):
+        self.scene.clear(); all_nodes = list(self.tensoes.keys())
+        if not all_nodes: return
+        adj = defaultdict(list)
+        for comp in self.componentes: adj[comp['n1']].append(comp['n2']); adj[comp['n2']].append(comp['n1'])
+        levels = {node: -1 for node in all_nodes}; max_level = 0
+        if '0' in all_nodes:
+            queue = deque([('0', 0)]); visited = {'0'}; levels['0'] = 0
+            while queue:
+                curr_node, level = queue.popleft(); max_level = max(max_level, level)
+                for neighbor in adj[curr_node]:
+                    if neighbor not in visited:
+                        visited.add(neighbor); levels[neighbor] = level + 1; queue.append((neighbor, level + 1))
+        level_unconnected = max_level + 1
+        for node in all_nodes:
+            if levels[node] == -1: levels[node] = level_unconnected; level_unconnected += 1
+        nodes_by_level = defaultdict(list)
+        for node, level in levels.items(): nodes_by_level[level].append(node)
+        node_positions = {}
+        y_step, x_step = 150, 200
+        for level, nodes_in_level in sorted(nodes_by_level.items()):
+            y = -level * y_step; width = (len(nodes_in_level) - 1) * x_step; start_x = -width / 2
+            for i, node_name in enumerate(sorted(nodes_in_level)):
+                x = start_x + i * x_step; node_positions[node_name] = QPointF(x, y); self.scene.addItem(NodeItem(node_name, x, y))
+        parallel_groups = defaultdict(list)
+        for comp in self.componentes: key = tuple(sorted((comp['n1'], comp['n2']))); parallel_groups[key].append(comp)
+        wire_pen = QPen(QColor(160, 160, 160), 1)
+        for node_pair, comps in parallel_groups.items():
+            n1, n2 = node_pair
+            if n1 not in node_positions or n2 not in node_positions: continue
+            pos1, pos2 = node_positions[n1], node_positions[n2]; line_vec = pos2 - pos1; perp_vec = QPointF(-line_vec.y(), line_vec.x())
+            norm_perp_vec = perp_vec / np.sqrt(perp_vec.x()**2 + perp_vec.y()**2) if (perp_vec.x()**2 + perp_vec.y()**2) > 0 else QPointF(0,0)
+            for i, comp in enumerate(comps):
+                offset_dist = 40; shift = (i - (len(comps) - 1) / 2.0) * offset_dist; offset = norm_perp_vec * shift; mid_point = ((pos1 + pos2) / 2) + offset
+                comp_item = self.criar_item_componente(comp)
+                if comp_item:
+                    angle_rad = np.arctan2(line_vec.y(), line_vec.x()); angle_deg = np.rad2deg(angle_rad)
+                    comp_item.setPos(mid_point); comp_item.setRotation(angle_deg); self.scene.addItem(comp_item)
+                    term1, term2 = comp_item.get_terminals(); scene_term1, scene_term2 = comp_item.mapToScene(term1), comp_item.mapToScene(term2)
+                    wire1 = QGraphicsLineItem(pos1.x(), pos1.y(), scene_term1.x(), scene_term1.y()); wire1.setPen(wire_pen); self.scene.addItem(wire1)
+                    wire2 = QGraphicsLineItem(pos2.x(), pos2.y(), scene_term2.x(), scene_term2.y()); wire2.setPen(wire_pen); self.scene.addItem(wire2)
+        self.view.fitInView(self.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+    def criar_item_componente(self, comp):
+        tipo = comp['tipo']; valor = comp['valor']
+        if tipo == 'V': return VSourceItem(comp['nome'], f"{valor}V")
+        elif tipo == 'R': return ResistorItem(comp['nome'], f"{valor}Ω")
+        elif tipo == 'L': return InductorItem(comp['nome'], f"{valor}H")
+        elif tipo == 'C': return CapacitorItem(comp['nome'], f"{valor}F")
+        elif tipo == 'Z': return ImpedanceItem(comp['nome'], f"{valor}Ω")
+        elif tipo in ['E', 'G', 'F', 'H']: return DependentSourceItem(comp['nome'], f"{valor}", source_type=tipo)
+        return None
     def atualizar_tabela(self):
         self.tabela.clear(); self.tabela.setRowCount(0); self.tabela.setColumnCount(7)
         self.tabela.setHorizontalHeaderLabels(["Agrupamento", "Grandeza", "Valor Polar", "Valor Retangular", "Potência Ativa (P)", "Potência Reativa (Q)", "Fator de Potência (FP)"])
@@ -260,7 +258,7 @@ class MainWindow(QMainWindow):
             add_data_row(f"Nó '{nome}'", f"Tensão V({nome})", valor)
         for comp in self.componentes:
             nome = comp['nome']; add_separator_row(f"--- Componente: {nome} ---")
-            add_data_row(nome, f"Corrente I({nome})", self.correntes[nome])
+            if not nome.startswith('Vctrl_'): add_data_row(nome, f"Corrente I({nome})", self.correntes[nome])
             add_power_row(nome, f"Potência S({nome})", self.potencias[nome])
         motores_agrupados = {}
         for comp in self.componentes:
