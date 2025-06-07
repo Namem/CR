@@ -1,6 +1,36 @@
 # netlist_parser/parser.py
 
 import math
+import re
+
+# --- NOVA FUNÇÃO ---
+def parse_valor_com_unidade(valor_str):
+    """
+    Interpreta um valor string que pode conter um prefixo de unidade do SI.
+    Ex: '10k' -> 10000.0, '100n' -> 1e-7
+    """
+    valor_str = valor_str.lower()
+    
+    unidades = {
+        'p': 1e-12, 'n': 1e-9, 'u': 1e-6, 'm': 1e-3,
+        'k': 1e3, 'meg': 1e6, 'g': 1e9, 't': 1e12
+    }
+    
+    # Tenta encontrar uma unidade no final da string
+    match = re.match(r"^(-?\d+\.?\d*)([a-z]+)$", valor_str)
+    
+    if match:
+        valor_numerico, unidade = match.groups()
+        multiplicador = unidades.get(unidade)
+        
+        if multiplicador:
+            return float(valor_numerico) * multiplicador
+        else:
+            # Se a unidade não for reconhecida, lança um erro
+            raise ValueError(f"Unidade desconhecida: '{unidade}' em '{valor_str}'")
+    else:
+        # Se não houver unidade, converte para float diretamente
+        return float(valor_str)
 
 def parse_netlist_linhas(linhas):
     componentes = []
@@ -14,36 +44,34 @@ def parse_netlist_linhas(linhas):
         nome_comp = tokens[0]
         tipo_comp = nome_comp[0].upper()
 
-        # Tratamento especial para fontes AC e motores (que usam sintaxe diferente)
-        # O resto é tratado como um componente genérico R, L, C, ou Z
         if len(tokens) > 3 and tokens[3].upper() == "AC":
-            # Fonte de Tensão AC: V1 A 0 AC 220 0
             n1, n2 = tokens[1], tokens[2]
-            valor = float(tokens[4])
-            fase = float(tokens[5]) if len(tokens) > 5 else 0.0
+            # Usa a nova função para interpretar os valores de magnitude e fase
+            valor = parse_valor_com_unidade(tokens[4])
+            fase = parse_valor_com_unidade(tokens[5]) if len(tokens) > 5 else 0.0
             componentes.append({
                 "tipo": "V", "nome": nome_comp, "n1": n1, "n2": n2, "valor": valor, "fase": fase
             })
         else:
-            # Componentes R, L, C ou Z (com valor real ou complexo)
             n1, n2 = tokens[1], tokens[2]
             
-            # --- CORREÇÃO DO BUG AQUI ---
-            # Verifica se há uma parte imaginária para a impedância
+            # --- CORREÇÃO APLICADA AQUI ---
             if len(tokens) > 4:
-                # É uma impedância complexa: Z_NOME N1 N2 REAL IMAG
+                # Impedância complexa: Z N1 N2 REAL IMAG
                 try:
-                    real_part = float(tokens[3])
-                    imag_part = float(tokens[4])
+                    # Usa a nova função para cada parte
+                    real_part = parse_valor_com_unidade(tokens[3])
+                    imag_part = parse_valor_com_unidade(tokens[4])
                     valor = complex(real_part, imag_part)
-                except ValueError:
-                    raise ValueError(f"Valor de impedância inválido para {nome_comp}: {tokens[3]} {tokens[4]}")
+                except ValueError as e:
+                    raise ValueError(f"Valor de impedância inválido para {nome_comp}: {e}")
             else:
-                # É um componente com valor real: R_NOME N1 N2 VALOR
+                # Componente com valor real: R N1 N2 VALOR
                 try:
-                    valor = float(tokens[3])
-                except ValueError:
-                    raise ValueError(f"Valor inválido para {nome_comp}: {tokens[3]}")
+                    # Usa a nova função para o valor
+                    valor = parse_valor_com_unidade(tokens[3])
+                except ValueError as e:
+                    raise ValueError(f"Valor inválido para {nome_comp}: {e}")
             
             componentes.append({
                 "tipo": tipo_comp,
@@ -55,27 +83,12 @@ def parse_netlist_linhas(linhas):
 
     return componentes
 
-
 def calcular_impedancia_motor(potencia_total_ativa, fp, ligacao='Y', tensao_fase=220):
-    """
-    Calcula a impedância complexa equivalente por fase de um motor.
-    potencia_total_ativa: Potência ativa total (P) em Watts.
-    fp: Fator de potência (cosseno do ângulo).
-    """
-    # Potência ativa por fase
+    # (Esta função permanece a mesma da versão anterior)
     p_fase = potencia_total_ativa / 3
-    
-    # Potência aparente por fase
     s_fase = p_fase / fp
-    
     if s_fase == 0:
-        return complex(1e12, 0) # Retorna uma impedância muito alta para evitar divisão por zero
-
-    # Ângulo da impedância
+        return complex(1e12, 0)
     theta = math.acos(fp)
-    
-    # Magnitude da impedância por fase
     z_mod = (tensao_fase**2) / s_fase
-
-    # Retorna o número complexo da impedância
     return z_mod * complex(math.cos(theta), math.sin(theta))
