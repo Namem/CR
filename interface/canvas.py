@@ -12,3 +12,6 @@ class MplCanvas(FigureCanvas):
     def clear(self):
         self.ax.clear()
         self.draw()
+
+    def set_title(self, title):
+        self.ax.set_title(title)

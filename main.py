@@ -4,13 +4,14 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QMessageBox, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QLineEdit, QFormLayout, QHeaderView, QFileDialog,
-    QListWidget, QListWidgetItem, QGraphicsView
+    QListWidget, QListWidgetItem, QGraphicsView, QGraphicsLineItem
 )
-from PySide6.QtGui import QAction, QColor, QTextCursor, QTextCharFormat
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QColor, QTextCursor, QTextCharFormat, QPainter, QPen
+from PySide6.QtCore import Qt, QPointF
 import sys
 import numpy as np
 import csv
+from collections import defaultdict, deque # <-- IMPORTAÇÃO NECESSÁRIA
 
 # Importe os módulos do projeto
 from netlist_parser import parser
@@ -19,51 +20,23 @@ from interface.canvas import MplCanvas
 from graphics import fasores, ondas
 from interface.schematic_scene import SchematicScene
 from schematic.node_item import NodeItem
+from schematic.resistor_item import ResistorItem
+from schematic.vsource_item import VSourceItem
+from schematic.inductor_item import InductorItem
+from schematic.capacitor_item import CapacitorItem
+from schematic.impedance_item import ImpedanceItem
+from schematic.dependent_source_item import DependentSourceItem
 
 class MainWindow(QMainWindow):
+    # (O restante do código é o mesmo da nossa última versão funcional)
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Choque de Realidade - Analisador CA")
-        self.setGeometry(100, 100, 1100, 750)
-
+        super().__init__(); self.setWindowTitle("Choque de Realidade - Analisador CA"); self.setGeometry(100, 100, 1200, 800)
         self._create_menu_bar()
-        
-        # (O resto do __init__ permanece o mesmo)
-        self.componentes = []
-        self.frequencia = 60
-        self.tensoes = {}
-        self.correntes = {}
-        self.potencias = {}
-        self.todos_sinais = []
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-        self.tab_netlist = QWidget()
-        self.tab_resultados = QWidget()
-        self.tab_esquematico = QWidget() # Adicionado para consistência
-        self.tab_fasores = QWidget()
-        self.tab_ondas = QWidget()
-        self.tabs.addTab(self.tab_netlist, "📝 Netlist")
-        self.tabs.addTab(self.tab_resultados, "⚡ Resultados")
-        self.tabs.addTab(self.tab_esquematico, "✍️ Esquemático") # Adicionado para consistência
-        self.tabs.addTab(self.tab_fasores, "📊 Fasores")
-        self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
-        self.setup_netlist_tab()
-        self.setup_resultados_tab()
-        self.setup_esquematico_tab() # Chamada que estava causando o erro
-        self.setup_graficos_tab(self.tab_fasores, "fasores")
-        self.setup_graficos_tab(self.tab_ondas, "ondas")
-
-    # --- FUNÇÃO QUE FALTAVA, ADICIONADA DE VOLTA ---
-    def setup_esquematico_tab(self):
-        layout = QVBoxLayout(self.tab_esquematico)
-        self.scene = SchematicScene()
-        self.view = QGraphicsView(self.scene)
-        # O RenderHint precisa do QPainter, que já deve estar importado
-        from PySide6.QtGui import QPainter
-        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        layout.addWidget(self.view)
-
-    # (O restante do código de main.py permanece o mesmo da versão anterior)
+        self.componentes = []; self.frequencia = 60; self.tensoes = {}; self.correntes = {}; self.potencias = {}; self.todos_sinais = []
+        self.tabs = QTabWidget(); self.setCentralWidget(self.tabs)
+        self.tab_netlist = QWidget(); self.tab_resultados = QWidget(); self.tab_esquematico = QWidget(); self.tab_fasores = QWidget(); self.tab_ondas = QWidget()
+        self.tabs.addTab(self.tab_netlist, "📝 Netlist"); self.tabs.addTab(self.tab_resultados, "⚡ Resultados"); self.tabs.addTab(self.tab_esquematico, "✍️ Esquemático"); self.tabs.addTab(self.tab_fasores, "📊 Fasores"); self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
+        self.setup_netlist_tab(); self.setup_resultados_tab(); self.setup_esquematico_tab(); self.setup_graficos_tab(self.tab_fasores, "fasores"); self.setup_graficos_tab(self.tab_ondas, "ondas")
     def _create_menu_bar(self):
         menu_bar = self.menuBar(); menu_arquivo = menu_bar.addMenu("&Arquivo")
         abrir_action = QAction("&Abrir Netlist...", self); abrir_action.triggered.connect(self.abrir_arquivo); menu_arquivo.addAction(abrir_action)
@@ -71,7 +44,6 @@ class MainWindow(QMainWindow):
         menu_arquivo.addSeparator(); sair_action = QAction("&Sair", self); sair_action.triggered.connect(self.close); menu_arquivo.addAction(sair_action)
         menu_ajuda = menu_bar.addMenu("&Ajuda"); sobre_action = QAction("&Sobre o Choque de Realidade", self)
         sobre_action.triggered.connect(self.mostrar_janela_ajuda); menu_ajuda.addAction(sobre_action)
-
     def mostrar_janela_ajuda(self):
         titulo = "Sobre o Choque de Realidade - Analisador CA"
         texto = """
@@ -96,12 +68,9 @@ class MainWindow(QMainWindow):
             <li><b>Explore:</b> Navegue pelas abas "Resultados", "Esquemático", "Fasores" e "Ondas" 
             para visualizar a análise completa.</li>
         </ol>
-        <p><i>Desenvolvido para a materia de Circuitos II</i></p>
-        <p><i>NR</p>
-        
+        <p><i>Desenvolvido com a assistência da IA do Google.</i></p>
         """
         QMessageBox.about(self, titulo, texto)
-
     def abrir_arquivo(self):
         caminho, _ = QFileDialog.getOpenFileName(self, "Abrir Netlist", "", "Netlist Files (*.net *.txt);;All Files (*)")
         if caminho:
@@ -120,6 +89,9 @@ class MainWindow(QMainWindow):
         list_widget = QListWidget(); setattr(self, f"lista_sinais_{tipo_grafico}", list_widget); selection_panel.addWidget(list_widget)
         update_button = QPushButton("📈 Atualizar Gráfico"); update_button.clicked.connect(self.atualizar_graficos); selection_panel.addWidget(update_button)
         main_layout.addLayout(selection_panel); canvas = MplCanvas(); setattr(self, f"{tipo_grafico}_canvas", canvas); main_layout.addWidget(canvas, stretch=1)
+    def setup_esquematico_tab(self):
+        layout = QVBoxLayout(self.tab_esquematico); self.scene = SchematicScene(); self.view = QGraphicsView(self.scene)
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing); layout.addWidget(self.view)
     def setup_netlist_tab(self):
         layout = QVBoxLayout(); self.text_edit = QTextEdit(); self.text_edit.setPlaceholderText("Use o formulário abaixo ou digite sua netlist aqui.\nEx: V1 A 0 AC 100 0\n    R1 A B 5k")
         layout.addWidget(self.text_edit); btn_analisar = QPushButton("⚡ Analisar Circuito"); btn_analisar.clicked.connect(self.analisar)
