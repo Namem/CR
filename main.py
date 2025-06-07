@@ -1,3 +1,5 @@
+# main.py
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QMessageBox, QHBoxLayout, QTableWidget, QTableWidgetItem,
@@ -21,6 +23,7 @@ class MainWindow(QMainWindow):
         self.frequencia = 60
         self.tensoes = []
         self.correntes = []
+        self.potencias = [] # <-- Adicionar lista de potências
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -106,7 +109,6 @@ class MainWindow(QMainWindow):
         else:
             motor_line = f"MOTOR_D {nome_motor} {a} {b} {c} {p} {fp}"
 
-        # Fontes trifásicas
         fontes = [
             f"V1 {a} 0 AC 220 0",
             f"V2 {b} 0 AC 220 -120",
@@ -146,54 +148,94 @@ class MainWindow(QMainWindow):
         try:
             linhas = texto.strip().split('\n')
             self.componentes = parser.parse_netlist_linhas(linhas)
-            V, mapa_nos, correntes = analise.montar_matriz(self.componentes, self.frequencia)
+            
+            # Desempacotar o novo valor retornado
+            V, mapa_nos, correntes, potencias = analise.montar_matriz(self.componentes, self.frequencia)
+            
             self.tensoes = [{"nome": f"V_{no}", "valor": V[idx]} for no, idx in mapa_nos.items()]
             self.correntes = correntes
-            todos = self.tensoes + self.correntes
+            self.potencias = potencias # <-- Armazenar os resultados da potência
+            
+            todos_visuais = self.tensoes + self.correntes
 
             self.atualizar_tabela()
-            self.plotar_fasores(todos)
-            self.plotar_ondas(todos)
+            self.plotar_fasores(todos_visuais)
+            self.plotar_ondas(todos_visuais)
             self.tabs.setCurrentIndex(1)
 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Falha na análise:\n{e}")
 
     def atualizar_tabela(self):
-        todos = self.tensoes + self.correntes
-        self.tabela.setRowCount(len(todos))
-        self.tabela.setColumnCount(3)
-        self.tabela.setHorizontalHeaderLabels(["Nome", "Valor (Polar)", "Valor (Retangular)"])
+        # Estrutura os dados para exibição na tabela
+        dados_tensao = [{"nome": d["nome"], "tipo": "Tensão", "valor": d["valor"]} for d in self.tensoes]
+        dados_corrente = [{"nome": d["nome"], "tipo": "Corrente", "valor": d["valor"]} for d in self.correntes]
+        dados_potencia = [{"nome": d["nome"], "tipo": "Potência", "S": d["S"], "P": d["P"], "Q": d["Q"], "fp": d["fp"]} for d in self.potencias]
+        
+        # Define o cabeçalho da tabela de forma mais completa
+        self.tabela.setColumnCount(6)
+        self.tabela.setHorizontalHeaderLabels(["Componente", "Grandeza", "Valor Polar/S (VA)", "Valor Ret/P (W)", "Q (VAR)", "FP"])
+        
+        # Popula a tabela
+        rowCount = 0
+        total_rows = len(dados_tensao) + len(dados_corrente) + len(dados_potencia)
+        self.tabela.setRowCount(total_rows)
 
-        for i, comp in enumerate(todos):
-            nome = comp["nome"]
+        # Adiciona Tensões e Correntes
+        for comp in dados_tensao + dados_corrente:
             val = comp["valor"]
             polar = f"{abs(val):.2f} ∠ {np.angle(val, deg=True):.2f}°"
             ret = f"{val.real:.2f} + j{val.imag:.2f}"
-            self.tabela.setItem(i, 0, QTableWidgetItem(nome))
-            self.tabela.setItem(i, 1, QTableWidgetItem(polar))
-            self.tabela.setItem(i, 2, QTableWidgetItem(ret))
+            self.tabela.setItem(rowCount, 0, QTableWidgetItem(comp["nome"]))
+            self.tabela.setItem(rowCount, 1, QTableWidgetItem(comp["tipo"]))
+            self.tabela.setItem(rowCount, 2, QTableWidgetItem(polar))
+            self.tabela.setItem(rowCount, 3, QTableWidgetItem(ret))
+            self.tabela.setItem(rowCount, 4, QTableWidgetItem("")) # Coluna Q vazia
+            self.tabela.setItem(rowCount, 5, QTableWidgetItem("")) # Coluna FP vazia
+            rowCount += 1
+            
+        # Adiciona Potências
+        for comp in dados_potencia:
+            S, P, Q, fp = comp["S"], comp["P"], comp["Q"], comp["fp"]
+            val_S = f"{abs(S):.2f} VA"
+            val_P = f"{P:.2f} W"
+            val_Q = f"{Q:.2f} VAR"
+            # Define se o FP é adiantado (capacitivo) ou atrasado (indutivo)
+            fp_status = "adiantado" if Q < 0 else "atrasado"
+            val_fp = f"{abs(fp):.3f} {fp_status}"
+            
+            self.tabela.setItem(rowCount, 0, QTableWidgetItem(comp["nome"]))
+            self.tabela.setItem(rowCount, 1, QTableWidgetItem(comp["tipo"]))
+            self.tabela.setItem(rowCount, 2, QTableWidgetItem(val_S))
+            self.tabela.setItem(rowCount, 3, QTableWidgetItem(val_P))
+            self.tabela.setItem(rowCount, 4, QTableWidgetItem(val_Q))
+            self.tabela.setItem(rowCount, 5, QTableWidgetItem(val_fp))
+            rowCount += 1
+            
+        self.tabela.resizeColumnsToContents()
+
 
     def plotar_fasores(self, dados):
         ax = self.fasor_canvas.ax
         self.fasor_canvas.clear()
         ax.set_title("Fasores de Tensões e Correntes")
-        ax.set_xlim(-1.2, 1.2)
-        ax.set_ylim(-1.2, 1.2)
-        ax.set_aspect('equal')
 
-        max_val = max(abs(d["valor"]) for d in dados)
+        max_val = max((abs(d["valor"]) for d in dados), default=1.0)
         fator = 1.0 / max_val if max_val > 0 else 1.0
 
         for d in dados:
-            val = d["valor"] * fator
-            ax.arrow(0, 0, val.real, val.imag, head_width=0.05, length_includes_head=True)
-            ax.text(val.real * 1.1, val.imag * 1.1, d["nome"])
+            val_norm = d["valor"] * fator
+            ax.arrow(0, 0, val_norm.real, val_norm.imag, head_width=0.05, length_includes_head=True, label=d["nome"])
+            ax.text(val_norm.real * 1.1, val_norm.imag * 1.1, d["nome"])
 
         ax.grid(True)
         ax.set_xlabel("Re")
         ax.set_ylabel("Im")
+        ax.axhline(0, color='black', linewidth=0.5)
+        ax.axvline(0, color='black', linewidth=0.5)
+        ax.set_aspect('equal', adjustable='box')
         self.fasor_canvas.draw()
+
 
     def plotar_ondas(self, dados, ciclos=2):
         t = np.linspace(0, ciclos / self.frequencia, 1000)
