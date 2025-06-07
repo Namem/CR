@@ -4,166 +4,164 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QMessageBox, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QLineEdit, QFormLayout, QHeaderView, QFileDialog,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QGraphicsView, QGraphicsLineItem
 )
-from PySide6.QtGui import QAction, QColor
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QColor, QTextCursor, QTextCharFormat, QPainter, QPen
+from PySide6.QtCore import Qt, QPointF
 import sys
 import numpy as np
 import csv
+from collections import defaultdict, deque
 
 # Importe os módulos do projeto
 from netlist_parser import parser
 from core import analise
 from interface.canvas import MplCanvas
 from graphics import fasores, ondas
+from interface.schematic_scene import SchematicScene
+from schematic.node_item import NodeItem
+from schematic.resistor_item import ResistorItem
+from schematic.vsource_item import VSourceItem
+from schematic.inductor_item import InductorItem
+from schematic.capacitor_item import CapacitorItem
+from schematic.impedance_item import ImpedanceItem
 
 class MainWindow(QMainWindow):
+    # (O __init__ e outras funções que não mudam foram omitidos para brevidade)
+    # ...
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Choque de Realidade - Analisador CA")
-        self.setGeometry(100, 100, 1100, 750)
-
-        # (O resto do __init__ e outras funções permanecem os mesmos)
+        super().__init__(); self.setWindowTitle("Choque de Realidade - Analisador CA"); self.setGeometry(100, 100, 1200, 800)
         self._create_menu_bar()
-        self.componentes = []
-        self.frequencia = 60
-        self.tensoes = {}
-        self.correntes = {}
-        self.potencias = {}
-        self.todos_sinais = []
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-        self.tab_netlist = QWidget()
-        self.tab_resultados = QWidget()
-        self.tab_fasores = QWidget()
-        self.tab_ondas = QWidget()
-        self.tabs.addTab(self.tab_netlist, "📝 Netlist")
-        self.tabs.addTab(self.tab_resultados, "⚡ Resultados")
-        self.tabs.addTab(self.tab_fasores, "📊 Fasores")
-        self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
-        self.setup_netlist_tab()
-        self.setup_resultados_tab()
-        self.setup_graficos_tab(self.tab_fasores, "fasores")
-        self.setup_graficos_tab(self.tab_ondas, "ondas")
+        self.componentes = []; self.frequencia = 60; self.tensoes = {}; self.correntes = {}; self.potencias = {}; self.todos_sinais = []
+        self.tabs = QTabWidget(); self.setCentralWidget(self.tabs)
+        self.tab_netlist = QWidget(); self.tab_resultados = QWidget(); self.tab_esquematico = QWidget(); self.tab_fasores = QWidget(); self.tab_ondas = QWidget()
+        self.tabs.addTab(self.tab_netlist, "📝 Netlist"); self.tabs.addTab(self.tab_resultados, "⚡ Resultados"); self.tabs.addTab(self.tab_esquematico, "✍️ Esquemático"); self.tabs.addTab(self.tab_fasores, "📊 Fasores"); self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
+        self.setup_netlist_tab(); self.setup_resultados_tab(); self.setup_esquematico_tab(); self.setup_graficos_tab(self.tab_fasores, "fasores"); self.setup_graficos_tab(self.tab_ondas, "ondas")
 
-    # --- MÉTODO ATUALIZADO PARA O LAYOUT FINAL DA TABELA ---
-    def atualizar_tabela(self):
-        self.tabela.clear()
-        self.tabela.setRowCount(0)
-        self.tabela.setColumnCount(7)
-        self.tabela.setHorizontalHeaderLabels([
-            "Agrupamento", "Grandeza", "Valor Polar", "Valor Retangular", 
-            "Potência Ativa (P)", "Potência Reativa (Q)", "Fator de Potência (FP)"
-        ])
+    # --- MÉTODO REESCRITO COM O NOVO ALGORITMO DE LAYOUT HIERÁRQUICO ---
+    def desenhar_esquematico(self):
+        self.scene.clear()
         
-        # --- Helpers para adicionar linhas ---
-        def add_separator_row(text):
-            row = self.tabela.rowCount()
-            self.tabela.insertRow(row)
-            item = QTableWidgetItem(text)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setBackground(QColor(60, 60, 60))
-            self.tabela.setItem(row, 0, item)
-            self.tabela.setSpan(row, 0, 1, self.tabela.columnCount())
+        all_nodes = list(self.tensoes.keys())
+        if not all_nodes: return
 
-        def add_data_row(agrupamento, grandeza, valor_complexo):
-            row = self.tabela.rowCount()
-            self.tabela.insertRow(row)
-            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento))
-            self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
-            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(valor_complexo):.2f} ∠ {np.angle(valor_complexo, deg=True):.2f}°"))
-            self.tabela.setItem(row, 3, QTableWidgetItem(f"{valor_complexo.real:.2f} + j({valor_complexo.imag:.2f})"))
+        # 1. Construir a lista de adjacências do grafo
+        adj = defaultdict(list)
+        for comp in self.componentes:
+            adj[comp['n1']].append(comp['n2'])
+            adj[comp['n2']].append(comp['n1'])
 
-        def add_power_row(agrupamento, grandeza, S):
-            row = self.tabela.rowCount()
-            self.tabela.insertRow(row)
-            P, Q = S.real, S.imag
-            fp_val = P / abs(S) if abs(S) > 1e-9 else 1.0
-            fp_status = "adiantado" if Q < 0 else "atrasado"
+        # 2. Calcular níveis (distância do nó '0') usando BFS
+        levels = {node: -1 for node in all_nodes}
+        max_level = 0
+        if '0' in all_nodes:
+            queue = deque([('0', 0)])
+            visited = {'0'}
+            levels['0'] = 0
             
-            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento))
-            self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
-            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(S):.2f} VA ∠ {np.angle(S, deg=True):.2f}°"))
-            self.tabela.setItem(row, 3, QTableWidgetItem(f"{P:.2f} + j({Q:.2f})"))
-            self.tabela.setItem(row, 4, QTableWidgetItem(f"{P:.2f} W"))
-            self.tabela.setItem(row, 5, QTableWidgetItem(f"{Q:.2f} VAR"))
-            self.tabela.setItem(row, 6, QTableWidgetItem(f"{abs(fp_val):.3f} {fp_status}"))
-
-        # 1. Mostra as Tensões Nodais
-        add_separator_row("--- Tensões Nodais ---")
-        for nome, valor in sorted(self.tensoes.items()):
-            if nome == '0': continue
-            add_data_row(f"Nó '{nome}'", f"Tensão V({nome})", valor)
-
-        # 2. Mostra os dados agrupados por componente
-        for comp in self.componentes:
-            nome = comp['nome']
-            add_separator_row(f"--- Componente: {nome} ---")
-            add_data_row(nome, f"Corrente I({nome})", self.correntes[nome])
-            add_power_row(nome, f"Potência S({nome})", self.potencias[nome])
-
-        # 3. Adiciona o resumo trifásico se aplicável
-        motores_agrupados = {}
-        for comp in self.componentes:
-            if comp['nome'].startswith('Z_M'):
-                partes = comp['nome'].split('_'); nome_motor = partes[1]
-                if nome_motor not in motores_agrupados: motores_agrupados[nome_motor] = []
-                motores_agrupados[nome_motor].append(comp)
-        for nome_motor, comps_motor in motores_agrupados.items():
-            if len(comps_motor) == 3: self.adicionar_resumo_trifasico_agrupado(nome_motor, comps_motor)
-
-        self.tabela.resizeColumnsToContents()
-
-    def adicionar_resumo_trifasico_agrupado(self, nome_motor, comps_motor):
-        # (Lógica interna adaptada para o novo layout)
-        def add_separator_row(text):
-            row = self.tabela.rowCount(); self.tabela.insertRow(row)
-            item = QTableWidgetItem(text); item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setBackground(QColor(60, 60, 60)); self.tabela.setItem(row, 0, item)
-            self.tabela.setSpan(row, 0, 1, self.tabela.columnCount())
-
-        def add_data_row(agrupamento, grandeza, valor_complexo):
-            row = self.tabela.rowCount(); self.tabela.insertRow(row)
-            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento)); self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
-            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(valor_complexo):.2f} ∠ {np.angle(valor_complexo, deg=True):.2f}°"))
-            self.tabela.setItem(row, 3, QTableWidgetItem(f"{valor_complexo.real:.2f} + j({valor_complexo.imag:.2f})"))
+            while queue:
+                curr_node, level = queue.popleft()
+                max_level = max(max_level, level)
+                for neighbor in adj[curr_node]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        levels[neighbor] = level + 1
+                        queue.append((neighbor, level + 1))
         
-        def add_power_row(agrupamento, grandeza, S):
-            row = self.tabela.rowCount(); self.tabela.insertRow(row)
-            P, Q = S.real, S.imag
-            fp_val = P / abs(S) if abs(S) > 1e-9 else 1.0
-            fp_status = "adiantado" if Q < 0 else "atrasado"
-            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento)); self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
-            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(S):.2f} VA ∠ {np.angle(S, deg=True):.2f}°"))
-            self.tabela.setItem(row, 3, QTableWidgetItem(f"{P:.2f} + j({Q:.2f})"))
-            self.tabela.setItem(row, 4, QTableWidgetItem(f"{P:.2f} W"))
-            self.tabela.setItem(row, 5, QTableWidgetItem(f"{Q:.2f} VAR"))
-            self.tabela.setItem(row, 6, QTableWidgetItem(f"{abs(fp_val):.3f} {fp_status}"))
+        # Atribuir níveis para nós desconectados (se houver)
+        level_unconnected = max_level + 1
+        for node in all_nodes:
+            if levels[node] == -1:
+                levels[node] = level_unconnected
+                level_unconnected += 1
+        
+        # 3. Organizar nós por nível
+        nodes_by_level = defaultdict(list)
+        for node, level in levels.items():
+            nodes_by_level[level].append(node)
 
-        add_separator_row(f"--- Resumo do Motor {nome_motor} ---")
-        nos_motor = set(); [nos_motor.update([c['n1'], c['n2']]) for c in comps_motor]
-        is_y = len(nos_motor) == 4
-        n1, n2, n3 = comps_motor[0]['n1'], comps_motor[1]['n1'], comps_motor[2]['n1']
-        V_ab = self.tensoes[n1] - self.tensoes[n2]
-        add_data_row(f"Motor {nome_motor}", "Tensão de Linha Média (V_LL)", V_ab)
-        if is_y:
-            neutro = list(nos_motor - {n1, n2, n3})[0]
-            V_an = self.tensoes[n1] - self.tensoes.get(neutro, 0)
-            I_a = self.correntes[comps_motor[0]['nome']]
-            add_data_row(f"Motor {nome_motor}", "Tensão de Fase Média (V_LN)", V_an)
-            add_data_row(f"Motor {nome_motor}", "Corrente de Linha/Fase (I_L)", I_a)
-        else: # Delta
-            I_ab = self.correntes[comps_motor[0]['nome']]
-            I_ca_comp_nome = next(c['nome'] for c in comps_motor if c['n1'] == n3 and c['n2'] == n1)
-            I_ca = self.correntes[I_ca_comp_nome]; I_L_a = I_ab - I_ca
-            add_data_row(f"Motor {nome_motor}", "Tensão de Fase (V_LL)", V_ab)
-            add_data_row(f"Motor {nome_motor}", "Corrente de Fase Média (I_ph)", I_ab)
-            add_data_row(f"Motor {nome_motor}", "Corrente de Linha Média (I_L)", I_L_a)
-        S_total = sum(self.potencias[c['nome']] for c in comps_motor)
-        add_power_row(f"Motor {nome_motor}", "Potência Trifásica Total", S_total)
+        # 4. Calcular posições na grade
+        node_positions = {}
+        y_step, x_step = 150, 200
+        for level, nodes_in_level in sorted(nodes_by_level.items()):
+            y = -level * y_step
+            width = (len(nodes_in_level) - 1) * x_step
+            start_x = -width / 2
+            for i, node_name in enumerate(sorted(nodes_in_level)):
+                x = start_x + i * x_step
+                node_positions[node_name] = QPointF(x, y)
+                self.scene.addItem(NodeItem(node_name, x, y))
 
-    # (O restante do código permanece o mesmo)
+        # 5. Desenhar componentes e fios (mesma lógica de antes, mas com novas posições)
+        parallel_groups = defaultdict(list)
+        for comp in self.componentes:
+            key = tuple(sorted((comp['n1'], comp['n2'])))
+            parallel_groups[key].append(comp)
+        
+        wire_pen = QPen(QColor(160, 160, 160), 1)
+        for node_pair, comps in parallel_groups.items():
+            n1, n2 = node_pair
+            if n1 not in node_positions or n2 not in node_positions: continue
+                
+            pos1, pos2 = node_positions[n1], node_positions[n2]
+            line_vec = pos2 - pos1
+            perp_vec = QPointF(-line_vec.y(), line_vec.x())
+            norm_perp_vec = perp_vec / np.sqrt(perp_vec.x()**2 + perp_vec.y()**2) if (perp_vec.x()**2 + perp_vec.y()**2) > 0 else QPointF(0,0)
+
+            for i, comp in enumerate(comps):
+                offset_dist = 40
+                shift = (i - (len(comps) - 1) / 2.0) * offset_dist
+                offset = norm_perp_vec * shift
+                mid_point = ((pos1 + pos2) / 2) + offset
+                
+                comp_item = self.criar_item_componente(comp)
+                if comp_item:
+                    angle_rad = np.arctan2(line_vec.y(), line_vec.x())
+                    angle_deg = np.rad2deg(angle_rad)
+                    comp_item.setPos(mid_point)
+                    comp_item.setRotation(angle_deg)
+                    self.scene.addItem(comp_item)
+                    
+                    term1, term2 = comp_item.get_terminals()
+                    scene_term1, scene_term2 = comp_item.mapToScene(term1), comp_item.mapToScene(term2)
+                    
+                    wire1 = QGraphicsLineItem(pos1.x(), pos1.y(), scene_term1.x(), scene_term1.y()); wire1.setPen(wire_pen); self.scene.addItem(wire1)
+                    wire2 = QGraphicsLineItem(pos2.x(), pos2.y(), scene_term2.x(), scene_term2.y()); wire2.setPen(wire_pen); self.scene.addItem(wire2)
+
+        self.view.fitInView(self.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    # (O restante do código de main.py permanece o mesmo da versão anterior)
+    def criar_item_componente(self, comp):
+        tipo = comp['tipo']
+        if tipo == 'V': return VSourceItem(comp['nome'], f"{comp['valor']}V")
+        elif tipo == 'R': return ResistorItem(comp['nome'], f"{comp['valor']}Ω")
+        elif tipo == 'L': return InductorItem(comp['nome'], f"{comp['valor']}H")
+        elif tipo == 'C': return CapacitorItem(comp['nome'], f"{comp['valor']}F")
+        elif tipo == 'Z': return ImpedanceItem(comp['nome'], f"{comp['valor']}Ω")
+        return None
+    def __init__(self):
+        super().__init__(); self.setWindowTitle("Choque de Realidade - Analisador CA"); self.setGeometry(100, 100, 1200, 800)
+        self._create_menu_bar()
+        self.componentes = []; self.frequencia = 60; self.tensoes = {}; self.correntes = {}; self.potencias = {}; self.todos_sinais = []
+        self.tabs = QTabWidget(); self.setCentralWidget(self.tabs)
+        self.tab_netlist = QWidget(); self.tab_resultados = QWidget(); self.tab_esquematico = QWidget(); self.tab_fasores = QWidget(); self.tab_ondas = QWidget()
+        self.tabs.addTab(self.tab_netlist, "📝 Netlist"); self.tabs.addTab(self.tab_resultados, "⚡ Resultados"); self.tabs.addTab(self.tab_esquematico, "✍️ Esquemático"); self.tabs.addTab(self.tab_fasores, "📊 Fasores"); self.tabs.addTab(self.tab_ondas, "🌊 Ondas")
+        self.setup_netlist_tab(); self.setup_resultados_tab(); self.setup_esquematico_tab(); self.setup_graficos_tab(self.tab_fasores, "fasores"); self.setup_graficos_tab(self.tab_ondas, "ondas")
+    def setup_esquematico_tab(self):
+        layout = QVBoxLayout(self.tab_esquematico); self.scene = SchematicScene(); self.view = QGraphicsView(self.scene)
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing); layout.addWidget(self.view)
+    def analisar(self):
+        self.limpar_destaque(); texto = self.text_edit.toPlainText()
+        if not texto.strip(): QMessageBox.warning(self, "Aviso", "A netlist está vazia."); return
+        try:
+            self.componentes = parser.parse_netlist_linhas(texto.strip().split('\n'))
+            self.tensoes, self.correntes, self.potencias = analise.montar_matriz_anm(self.componentes, self.frequencia)
+            self.todos_sinais = []; self.todos_sinais.extend([{"nome": f"V({n})", "valor": v} for n, v in self.tensoes.items() if n != '0']); self.todos_sinais.extend([{"nome": f"I({n})", "valor": i} for n, i in self.correntes.items()])
+            self.atualizar_tabela(); self.desenhar_esquematico(); self.popular_listas_de_sinais(); self.atualizar_graficos(); self.tabs.setCurrentIndex(1)
+        except parser.NetlistParseError as e:
+            QMessageBox.critical(self, "Erro na Netlist", str(e)); self.destacar_linha_erro(e.line_number)
+        except Exception as e:
+            QMessageBox.critical(self, "Erro na Análise", f"Ocorreu um erro inesperado:\n{e}")
     def _create_menu_bar(self):
         menu_bar = self.menuBar(); menu_arquivo = menu_bar.addMenu("&Arquivo")
         abrir_action = QAction("&Abrir Netlist...", self); abrir_action.triggered.connect(self.abrir_arquivo); menu_arquivo.addAction(abrir_action)
@@ -217,20 +215,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(); self.tabela = QTableWidget(); layout.addWidget(self.tabela)
         btn_exportar = QPushButton("💾 Exportar para CSV"); btn_exportar.clicked.connect(self.exportar_para_csv)
         hbox = QHBoxLayout(); hbox.addStretch(1); hbox.addWidget(btn_exportar); layout.addLayout(hbox); self.tab_resultados.setLayout(layout)
-    def analisar(self):
-        texto = self.text_edit.toPlainText()
-        if not texto.strip(): QMessageBox.warning(self, "Aviso", "A netlist está vazia."); return
-        try:
-            self.componentes = parser.parse_netlist_linhas(texto.strip().split('\n'))
-            self.tensoes, self.correntes, self.potencias = analise.montar_matriz_anm(self.componentes, self.frequencia)
-            self.todos_sinais = []
-            self.todos_sinais.extend([{"nome": f"V({n})", "valor": v} for n, v in self.tensoes.items() if n != '0'])
-            self.todos_sinais.extend([{"nome": f"I({n})", "valor": i} for n, i in self.correntes.items()])
-            self.atualizar_tabela()
-            self.popular_listas_de_sinais()
-            self.atualizar_graficos()
-            self.tabs.setCurrentIndex(1)
-        except Exception as e: QMessageBox.critical(self, "Erro na Análise", f"Ocorreu um erro:\n{e}")
     def popular_listas_de_sinais(self):
         self.lista_sinais_fasores.clear(); self.lista_sinais_ondas.clear()
         for sinal in self.todos_sinais:
@@ -251,6 +235,72 @@ class MainWindow(QMainWindow):
         if dados_ondas: ondas.plotar_ondas(self.ondas_canvas.ax, dados_ondas, f=self.frequencia)
         else: self.ondas_canvas.clear()
         self.ondas_canvas.draw()
+    def atualizar_tabela(self):
+        self.tabela.clear(); self.tabela.setRowCount(0); self.tabela.setColumnCount(7)
+        self.tabela.setHorizontalHeaderLabels(["Agrupamento", "Grandeza", "Valor Polar", "Valor Retangular", "Potência Ativa (P)", "Potência Reativa (Q)", "Fator de Potência (FP)"])
+        def add_separator_row(text):
+            row = self.tabela.rowCount(); self.tabela.insertRow(row); item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter); item.setBackground(QColor(60, 60, 60)); self.tabela.setItem(row, 0, item)
+            self.tabela.setSpan(row, 0, 1, self.tabela.columnCount())
+        def add_data_row(agrupamento, grandeza, valor_complexo):
+            row = self.tabela.rowCount(); self.tabela.insertRow(row)
+            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento)); self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
+            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(valor_complexo):.2f} ∠ {np.angle(valor_complexo, deg=True):.2f}°"))
+            self.tabela.setItem(row, 3, QTableWidgetItem(f"{valor_complexo.real:.2f} + j({valor_complexo.imag:.2f})"))
+        def add_power_row(agrupamento, grandeza, S):
+            row = self.tabela.rowCount(); self.tabela.insertRow(row)
+            P, Q = S.real, S.imag; fp_val = P / abs(S) if abs(S) > 1e-9 else 1.0; fp_status = "adiantado" if Q < 0 else "atrasado"
+            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento)); self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
+            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(S):.2f} VA ∠ {np.angle(S, deg=True):.2f}°"))
+            self.tabela.setItem(row, 3, QTableWidgetItem(f"{P:.2f} + j({Q:.2f})")); self.tabela.setItem(row, 4, QTableWidgetItem(f"{P:.2f} W"))
+            self.tabela.setItem(row, 5, QTableWidgetItem(f"{Q:.2f} VAR")); self.tabela.setItem(row, 6, QTableWidgetItem(f"{abs(fp_val):.3f} {fp_status}"))
+        add_separator_row("--- Tensões Nodais ---")
+        for nome, valor in sorted(self.tensoes.items()):
+            if nome == '0': continue
+            add_data_row(f"Nó '{nome}'", f"Tensão V({nome})", valor)
+        for comp in self.componentes:
+            nome = comp['nome']; add_separator_row(f"--- Componente: {nome} ---")
+            add_data_row(nome, f"Corrente I({nome})", self.correntes[nome])
+            add_power_row(nome, f"Potência S({nome})", self.potencias[nome])
+        motores_agrupados = {}
+        for comp in self.componentes:
+            if comp['nome'].startswith('Z_M'):
+                partes = comp['nome'].split('_'); nome_motor = partes[1]
+                if nome_motor not in motores_agrupados: motores_agrupados[nome_motor] = []
+                motores_agrupados[nome_motor].append(comp)
+        for nome_motor, comps_motor in motores_agrupados.items():
+            if len(comps_motor) == 3: self.adicionar_resumo_trifasico_agrupado(nome_motor, comps_motor)
+        self.tabela.resizeColumnsToContents()
+    def adicionar_resumo_trifasico_agrupado(self, nome_motor, comps_motor):
+        def add_separator_row(text):
+            row = self.tabela.rowCount(); self.tabela.insertRow(row); item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter); item.setBackground(QColor(60, 60, 60)); self.tabela.setItem(row, 0, item)
+            self.tabela.setSpan(row, 0, 1, self.tabela.columnCount())
+        def add_data_row(agrupamento, grandeza, valor_complexo):
+            row = self.tabela.rowCount(); self.tabela.insertRow(row)
+            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento)); self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
+            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(valor_complexo):.2f} ∠ {np.angle(valor_complexo, deg=True):.2f}°"))
+            self.tabela.setItem(row, 3, QTableWidgetItem(f"{valor_complexo.real:.2f} + j({valor_complexo.imag:.2f})"))
+        def add_power_row(agrupamento, grandeza, S):
+            row = self.tabela.rowCount(); self.tabela.insertRow(row)
+            P, Q = S.real, S.imag; fp_val = P / abs(S) if abs(S) > 1e-9 else 1.0; fp_status = "adiantado" if Q < 0 else "atrasado"
+            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento)); self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
+            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(S):.2f} VA ∠ {np.angle(S, deg=True):.2f}°"))
+            self.tabela.setItem(row, 3, QTableWidgetItem(f"{P:.2f} + j({Q:.2f})")); self.tabela.setItem(row, 4, QTableWidgetItem(f"{P:.2f} W"))
+            self.tabela.setItem(row, 5, QTableWidgetItem(f"{Q:.2f} VAR")); self.tabela.setItem(row, 6, QTableWidgetItem(f"{abs(fp_val):.3f} {fp_status}"))
+        add_separator_row(f"--- Resumo do Motor {nome_motor} ---")
+        nos_motor = set(); [nos_motor.update([c['n1'], c['n2']]) for c in comps_motor]; is_y = len(nos_motor) == 4
+        n1, n2, n3 = comps_motor[0]['n1'], comps_motor[1]['n1'], comps_motor[2]['n1']
+        V_ab = self.tensoes[n1] - self.tensoes[n2]
+        add_data_row(f"Motor {nome_motor}", "Tensão de Linha Média (V_LL)", V_ab)
+        if is_y:
+            neutro = list(nos_motor - {n1, n2, n3})[0]; V_an = self.tensoes[n1] - self.tensoes.get(neutro, 0); I_a = self.correntes[comps_motor[0]['nome']]
+            add_data_row(f"Motor {nome_motor}", "Tensão de Fase Média (V_LN)", V_an); add_data_row(f"Motor {nome_motor}", "Corrente de Linha/Fase (I_L)", I_a)
+        else: # Delta
+            I_ab = self.correntes[comps_motor[0]['nome']]; I_ca_comp_nome = next(c['nome'] for c in comps_motor if c['n1'] == n3 and c['n2'] == n1); I_ca = self.correntes[I_ca_comp_nome]; I_L_a = I_ab - I_ca
+            add_data_row(f"Motor {nome_motor}", "Tensão de Fase (V_LL)", V_ab); add_data_row(f"Motor {nome_motor}", "Corrente de Fase Média (I_ph)", I_ab); add_data_row(f"Motor {nome_motor}", "Corrente de Linha Média (I_L)", I_L_a)
+        S_total = sum(self.potencias[c['nome']] for c in comps_motor)
+        add_power_row(f"Motor {nome_motor}", "Potência Trifásica Total", S_total)
     def exportar_para_csv(self):
         if self.tabela.rowCount() == 0: QMessageBox.warning(self, "Aviso", "Não há dados na tabela para exportar."); return
         caminho_arquivo, _ = QFileDialog.getSaveFileName(self, "Salvar Resultados", "", "CSV Files (*.csv);;All Files (*)")
@@ -269,6 +319,19 @@ class MainWindow(QMainWindow):
                     writer.writerow(linha_dados)
             QMessageBox.information(self, "Sucesso", f"Resultados exportados para:\n{caminho_arquivo}")
         except Exception as e: QMessageBox.critical(self, "Erro de Exportação", f"Não foi possível salvar o arquivo:\n{e}")
+    def limpar_destaque(self):
+        fmt = QTextCharFormat(); fmt.clearBackground()
+        cursor = self.text_edit.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.setCharFormat(fmt); cursor.clearSelection()
+        self.text_edit.setTextCursor(cursor)
+    def destacar_linha_erro(self, linha_numero):
+        fmt = QTextCharFormat(); fmt.setBackground(QColor(139, 0, 0, 150))
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.Down, QTextCursor.MoveMode.MoveAnchor, linha_numero - 1)
+        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+        cursor.setCharFormat(fmt)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
