@@ -1,0 +1,81 @@
+/* interface/light_style.qss */
+
+/* Estilo geral */
+QWidget {
+    background-color: #f0f0f0; /* Fundo principal - Cinza bem claro */
+    color: #000000;           /* Cor do texto principal - Preto */
+    font-family: "Segoe UI", Cantarell, "Sans-Serif";
+    font-size: 10pt;
+}
+
+/* Abas */
+QTabBar::tab {
+    background: #dcdcdc;
+    color: #333333;
+    padding: 10px;
+    border: 1px solid #c0c0c0;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected, QTabBar::tab:hover {
+    background: #ffffff; /* Aba ativa fica branca */
+}
+QTabWidget::pane {
+    border: 1px solid #c0c0c0;
+    background: #ffffff;
+}
+
+/* Botões */
+QPushButton {
+    background-color: #0078d7; /* Azul */
+    color: #ffffff;
+    border-radius: 5px;
+    padding: 8px;
+    font-weight: bold;
+    border: 1px solid #005a9e;
+}
+QPushButton:hover {
+    background-color: #008cff;
+}
+QPushButton:pressed {
+    background-color: #005a9e;
+}
+
+/* Tabela */
+QTableWidget {
+    background-color: #ffffff;
+    gridline-color: #dcdcdc;
+}
+QHeaderView::section {
+    background-color: #e8e8e8;
+    color: #333333;
+    padding: 5px;
+    border: 1px solid #c0c0c0;
+}
+
+/* Campos de Texto e Seleção */
+QLineEdit, QTextEdit, QComboBox {
+    background-color: #ffffff;
+    border: 1px solid #c0c0c0;
+    border-radius: 5px;
+    padding: 5px;
+    color: #000000;
+}
+
+/* Barra de Menu */
+QMenuBar {
+    background-color: #e8e8e8;
+    color: #333333;
+}
+QMenuBar::item:selected {
+    background-color: #dcdcdc;
+}
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #c0c0c0;
+}
+QMenu::item:selected {
+    background-color: #0078d7;
+    color: #ffffff;
+}
