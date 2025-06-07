@@ -6,54 +6,48 @@ def parse_netlist_linhas(linhas):
     componentes = []
 
     for linha in linhas:
-        if linha.strip() == "" or linha.startswith("*"):
+        linha_limpa = linha.strip()
+        if not linha_limpa or linha_limpa.startswith("*"):
             continue
 
-        tokens = linha.split()
-        tipo = tokens[0].upper()
+        tokens = linha_limpa.split()
+        nome_comp = tokens[0]
+        tipo_comp = nome_comp[0].upper()
 
-        if tipo == "MOTOR_Y":
-            nome = tokens[1]
-            a, b, c, neutro = tokens[2], tokens[3], tokens[4], tokens[5]
-            potencia = float(tokens[6])
-            fp = float(tokens[7])
-
-            z = calcular_impedancia_motor(potencia, fp, ligacao='Y')
-
-            # Três impedâncias: A-Neutro, B-Neutro, C-Neutro
-            componentes.append({"tipo": "Z", "nome": f"{nome}_A", "n1": a, "n2": neutro, "valor": z})
-            componentes.append({"tipo": "Z", "nome": f"{nome}_B", "n1": b, "n2": neutro, "valor": z})
-            componentes.append({"tipo": "Z", "nome": f"{nome}_C", "n1": c, "n2": neutro, "valor": z})
-
-        elif tipo == "MOTOR_D":
-            nome = tokens[1]
-            a, b, c = tokens[2], tokens[3], tokens[4]
-            potencia = float(tokens[5])
-            fp = float(tokens[6])
-
-            z = calcular_impedancia_motor(potencia, fp, ligacao='D')
-
-            # Três impedâncias entre fases: AB, BC, CA
-            componentes.append({"tipo": "Z", "nome": f"{nome}_AB", "n1": a, "n2": b, "valor": z})
-            componentes.append({"tipo": "Z", "nome": f"{nome}_BC", "n1": b, "n2": c, "valor": z})
-            componentes.append({"tipo": "Z", "nome": f"{nome}_CA", "n1": c, "n2": a, "valor": z})
-
-        elif tokens[0][0].upper() == 'V' and tokens[3].upper() == "AC":
-            nome = tokens[0]
+        # Tratamento especial para fontes AC e motores (que usam sintaxe diferente)
+        # O resto é tratado como um componente genérico R, L, C, ou Z
+        if len(tokens) > 3 and tokens[3].upper() == "AC":
+            # Fonte de Tensão AC: V1 A 0 AC 220 0
             n1, n2 = tokens[1], tokens[2]
             valor = float(tokens[4])
             fase = float(tokens[5]) if len(tokens) > 5 else 0.0
             componentes.append({
-                "tipo": "V", "nome": nome, "n1": n1, "n2": n2, "valor": valor, "fase": fase
+                "tipo": "V", "nome": nome_comp, "n1": n1, "n2": n2, "valor": valor, "fase": fase
             })
-
         else:
-            nome = tokens[0]
+            # Componentes R, L, C ou Z (com valor real ou complexo)
             n1, n2 = tokens[1], tokens[2]
-            valor = float(tokens[3])
+            
+            # --- CORREÇÃO DO BUG AQUI ---
+            # Verifica se há uma parte imaginária para a impedância
+            if len(tokens) > 4:
+                # É uma impedância complexa: Z_NOME N1 N2 REAL IMAG
+                try:
+                    real_part = float(tokens[3])
+                    imag_part = float(tokens[4])
+                    valor = complex(real_part, imag_part)
+                except ValueError:
+                    raise ValueError(f"Valor de impedância inválido para {nome_comp}: {tokens[3]} {tokens[4]}")
+            else:
+                # É um componente com valor real: R_NOME N1 N2 VALOR
+                try:
+                    valor = float(tokens[3])
+                except ValueError:
+                    raise ValueError(f"Valor inválido para {nome_comp}: {tokens[3]}")
+            
             componentes.append({
-                "tipo": tokens[0][0].upper(),
-                "nome": nome,
+                "tipo": tipo_comp,
+                "nome": nome_comp,
                 "n1": n1,
                 "n2": n2,
                 "valor": valor
@@ -62,17 +56,26 @@ def parse_netlist_linhas(linhas):
     return componentes
 
 
-def calcular_impedancia_motor(potencia_total, fp, ligacao='Y', tensao_fase=220, freq=60):
+def calcular_impedancia_motor(potencia_total_ativa, fp, ligacao='Y', tensao_fase=220):
     """
-    Estima a impedância complexa equivalente por fase de um motor
+    Calcula a impedância complexa equivalente por fase de um motor.
+    potencia_total_ativa: Potência ativa total (P) em Watts.
+    fp: Fator de potência (cosseno do ângulo).
     """
-    s = potencia_total / 3  # potência por fase
-    ang = math.acos(fp)
-    p = s * fp
-    q = s * math.sin(ang)
-    v = tensao_fase
+    # Potência ativa por fase
+    p_fase = potencia_total_ativa / 3
+    
+    # Potência aparente por fase
+    s_fase = p_fase / fp
+    
+    if s_fase == 0:
+        return complex(1e12, 0) # Retorna uma impedância muito alta para evitar divisão por zero
 
-    z_mod = v**2 / s
-    theta = math.atan2(q, p)
+    # Ângulo da impedância
+    theta = math.acos(fp)
+    
+    # Magnitude da impedância por fase
+    z_mod = (tensao_fase**2) / s_fase
 
+    # Retorna o número complexo da impedância
     return z_mod * complex(math.cos(theta), math.sin(theta))
