@@ -1,0 +1,85 @@
+/* interface/style.qss */
+
+/* Estilo geral para todos os widgets */
+QWidget {
+    background-color: #282a36; /* Fundo principal - Cinza escuro/azulado */
+    color: #f8f8f2;           /* Cor do texto principal - Quase branco */
+    font-family: "Segoe UI", Cantarell, "Sans-Serif";
+    font-size: 10pt;
+}
+
+/* Estilo para a janela principal */
+QMainWindow {
+    border: 1px solid #44475a;
+}
+
+/* Estilo para as abas */
+QTabWidget::pane {
+    border-top: 2px solid #44475a;
+}
+QTabBar::tab {
+    background: #44475a; /* Fundo da aba inativa - Roxo acinzentado */
+    color: #f8f8f2;
+    padding: 10px;
+    border: 1px solid #282a36;
+    border-bottom-color: #44475a; 
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected, QTabBar::tab:hover {
+    background: #6272a4; /* Fundo da aba ativa/hover - Roxo mais claro */
+}
+
+/* Estilo para botões */
+QPushButton {
+    background-color:rgb(80, 91, 250); /* Verde limão */
+    color: #282a36;
+    border-radius: 5px;
+    padding: 8px;
+    font-weight: bold;
+    border: 1px solid #44475a;
+}
+QPushButton:hover {
+    background-color:rgb(105, 115, 255); /* Verde mais claro */
+}
+QPushButton:pressed {
+    background-color:rgb(105, 115, 255); /* Verde um pouco mais escuro */
+}
+
+/* Estilo para a tabela de resultados */
+QTableWidget {
+    background-color: #333644;
+    gridline-color: #44475a;
+    border-radius: 5px;
+}
+QHeaderView::section {
+    background-color: #6272a4;
+    color: #f8f8f2;
+    padding: 5px;
+    border: 1px solid #44475a;
+}
+
+/* Estilo para campos de texto e caixas de seleção */
+QLineEdit, QTextEdit, QComboBox {
+    background-color: #44475a;
+    border: 1px solid #6272a4;
+    border-radius: 5px;
+    padding: 5px;
+}
+QComboBox::drop-down {
+    border: none;
+}
+
+/* Estilo para a barra de menu */
+QMenuBar {
+    background-color: #282a36;
+}
+QMenuBar::item:selected {
+    background-color: #44475a;
+}
+QMenu {
+    background-color: #44475a;
+}
+QMenu::item:selected {
+    background-color: #6272a4;
+}
