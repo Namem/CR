@@ -1,14 +1,34 @@
 # main.py
 
+import sys
+import os
+import shutil
+
+# --- FUNÇÃO DE LIMPEZA DE CACHE ---
+def limpar_cache_python():
+    diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+    for root, dirs, files in os.walk(diretorio_atual):
+        if "__pycache__" in dirs:
+            caminho_cache = os.path.join(root, "__pycache__")
+            print(f"Limpando cache antigo em: {caminho_cache}")
+            try:
+                shutil.rmtree(caminho_cache)
+            except OSError as e:
+                print(f"Erro ao remover cache: {e}")
+
+# --- EXECUTA A LIMPEZA ANTES DE TUDO ---
+limpar_cache_python()
+
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QMessageBox, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QLineEdit, QFormLayout, QHeaderView, QFileDialog,
-    QListWidget, QListWidgetItem, QGraphicsView, QGraphicsLineItem
+    QListWidget, QListWidgetItem, QGraphicsView, QGraphicsLineItem, QDialog,
+    QDialogButtonBox
 )
 from PySide6.QtGui import QAction, QColor, QTextCursor, QTextCharFormat, QPainter, QPen
 from PySide6.QtCore import Qt, QPointF
-import sys
 import numpy as np
 import csv
 from collections import defaultdict, deque
@@ -27,6 +47,24 @@ from schematic.capacitor_item import CapacitorItem
 from schematic.impedance_item import ImpedanceItem
 from schematic.dependent_source_item import DependentSourceItem
 
+# --- NOVA CLASSE PARA A JANELA DE AJUDA COM ROLAGEM ---
+class HelpDialog(QDialog):
+    def __init__(self, title, html_content, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(600, 500)
+
+        layout = QVBoxLayout(self)
+
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setHtml(html_content)
+        layout.addWidget(text_edit)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        button_box.accepted.connect(self.accept)
+        layout.addWidget(button_box)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -40,6 +78,8 @@ class MainWindow(QMainWindow):
         self.tensoes = {}
         self.correntes = {}
         self.potencias = {}
+        self.z_eq = None
+        self.i_total = None
         self.todos_sinais = []
 
         self.tabs = QTabWidget()
@@ -65,7 +105,6 @@ class MainWindow(QMainWindow):
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
         
-        # Menu Arquivo
         menu_arquivo = menu_bar.addMenu("&Arquivo")
         abrir_action = QAction("&Abrir Netlist...", self)
         abrir_action.triggered.connect(self.abrir_arquivo)
@@ -81,7 +120,6 @@ class MainWindow(QMainWindow):
         sair_action.triggered.connect(self.close)
         menu_arquivo.addAction(sair_action)
 
-        # Novo Menu Visualizar
         menu_view = menu_bar.addMenu("&Visualizar")
         
         tema_dracula_action = QAction("Tema Escuro (Dracula)", self)
@@ -96,20 +134,84 @@ class MainWindow(QMainWindow):
         tema_ocean_action.triggered.connect(lambda: self.carregar_estilo("interface/ocean_style.qss"))
         menu_view.addAction(tema_ocean_action)
 
-        # Menu Ajuda
         menu_ajuda = menu_bar.addMenu("&Ajuda")
+        
+        guia_action = QAction("&Guia de Formato da Netlist", self)
+        guia_action.triggered.connect(self.mostrar_guia_netlist)
+        menu_ajuda.addAction(guia_action)
+
+        menu_ajuda.addSeparator()
+
         sobre_action = QAction("&Sobre o Choque de Realidade", self)
         sobre_action.triggered.connect(self.mostrar_janela_ajuda)
         menu_ajuda.addAction(sobre_action)
 
     def carregar_estilo(self, caminho_arquivo):
-        """Carrega e aplica um arquivo de folha de estilos (QSS) à aplicação."""
         try:
             with open(caminho_arquivo, "r") as f:
                 self.setStyleSheet(f.read())
         except FileNotFoundError:
             print(f"Arquivo de estilo não encontrado: {caminho_arquivo}. Usando estilo padrão.")
-            self.setStyleSheet("") # Reseta para o estilo padrão do sistema
+            self.setStyleSheet("")
+
+    def mostrar_guia_netlist(self):
+        titulo = "Guia de Formato da Netlist"
+        texto_html = """
+        <style>
+            code { background-color: #555; padding: 2px 4px; border-radius: 3px; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #777; padding: 8px; text-align: left; }
+            th { background-color: #444; }
+        </style>
+        <p>Use o formato a seguir para descrever cada componente do seu circuito, com um componente por linha. 
+        O nó de referência (terra) é sempre o <b>nó 0</b>.</p>
+        <p><b>Estrutura Geral:</b><br>
+        <code>NomeDoComponente Nó1 Nó2 [Parâmetros...]</code></p>
+        <hr>
+        <h3>Componentes Passivos (R, L, C, Z)</h3>
+        <p><b>Resistor (R)</b><br>
+        Sintaxe: <code>Rx nó+ nó- valor</code><br>
+        Exemplo: <code>R1 A B 1k</code></p>
+        <p><b>Indutor (L)</b><br>
+        Sintaxe: <code>Lx nó+ nó- valor</code><br>
+        Exemplo: <code>L_bobina 2 0 100m</code></p>
+        <p><b>Capacitor (C)</b><br>
+        Sintaxe: <code>Cx nó+ nó- valor</code><br>
+        Exemplo: <code>C_filtro 3 0 10u</code></p>
+        <p><b>Impedância Genérica (Z)</b><br>
+        Sintaxe: <code>Zx nó+ nó- parte_real parte_imaginária</code><br>
+        Exemplo: <code>Z_carga B 0 50 -25.5</code></p>
+        <hr>
+        <h3>Fontes Independentes</h3>
+        <p><b>Fonte de Tensão AC (V)</b><br>
+        Sintaxe: <code>Vx nó+ nó- AC magnitude [fase_em_graus]</code><br>
+        <i>* O parâmetro de fase é opcional e assume 0 se não for especificado.</i><br>
+        Exemplo: <code>V_entrada in 0 AC 120 -90</code></p>
+        <hr>
+        <h3>Fontes Dependentes (E, G, F, H)</h3>
+        <p><b>Sintaxe Geral:</b> <code>Nome nó+ nó- nó_controle+ nó_controle- ganho</code></p>
+        <p><b>Fonte de Tensão Controlada por Tensão (VCVS - Tipo E)</b><br>
+        Exemplo: <code>E_amp out 0 in 0 50</code> (A tensão de saída é 50x a tensão de entrada).</p>
+        <p><b>Fonte de Corrente Controlada por Tensão (VCCS - Tipo G)</b><br>
+        Exemplo: <code>G1 out 0 in 0 0.1</code> (A corrente de saída é 0.1 * a tensão de entrada).</p>
+        <p><b>Fontes Controladas por Corrente (CCCS - F / CCVS - H)</b><br>
+        A corrente de controle é medida através da fonte de tensão especificada.</p>
+        <hr>
+        <h3>Unidades de Medida</h3>
+        <table>
+            <tr><th>Prefixo</th><th>Nome</th><th>Multiplicador</th></tr>
+            <tr><td>T</td><td>Tera</td><td>1e12</td></tr>
+            <tr><td>G</td><td>Giga</td><td>1e9</td></tr>
+            <tr><td>MEG</td><td>Mega</td><td>1e6</td></tr>
+            <tr><td>K</td><td>Kilo</td><td>1e3</td></tr>
+            <tr><td>M</td><td>Mili</td><td>1e-3</td></tr>
+            <tr><td>U</td><td>Micro</td><td>1e-6</td></tr>
+            <tr><td>N</td><td>Nano</td><td>1e-9</td></tr>
+            <tr><td>P</td><td>Pico</td><td>1e-12</td></tr>
+        </table>
+        """
+        dialog = HelpDialog(titulo, texto_html, self)
+        dialog.exec()
 
     def mostrar_janela_ajuda(self):
         titulo = "Sobre o Choque de Realidade - Analisador CA"
@@ -139,6 +241,7 @@ class MainWindow(QMainWindow):
         """
         QMessageBox.about(self, titulo, texto)
 
+    # ... (O restante do arquivo main.py continua aqui, sem alterações)
     def abrir_arquivo(self):
         caminho, _ = QFileDialog.getOpenFileName(self, "Abrir Netlist", "", "Netlist Files (*.net *.txt);;All Files (*)")
         if caminho:
@@ -250,10 +353,21 @@ class MainWindow(QMainWindow):
             return
         try:
             self.componentes = parser.parse_netlist_linhas(texto.strip().split('\n'))
-            self.tensoes, self.correntes, self.potencias = analise.montar_matriz_anm(self.componentes, self.frequencia)
+            self.tensoes, self.correntes, self.potencias, self.z_eq, self.i_total = analise.montar_matriz_anm(self.componentes, self.frequencia)
+            
             self.todos_sinais = []
             self.todos_sinais.extend([{"nome": f"V({n})", "valor": v} for n, v in self.tensoes.items() if n != '0'])
-            self.todos_sinais.extend([{"nome": f"I({n})", "valor": i} for n, i in self.correntes.items()])
+            
+            for comp in self.componentes:
+                nome_comp = comp['nome']
+                if not nome_comp.startswith('Vctrl_') and nome_comp in self.correntes:
+                    self.todos_sinais.append({"nome": f"I({nome_comp})", "valor": self.correntes[nome_comp]})
+
+            if self.i_total is not None:
+                self.todos_sinais.append({"nome": "I(Total)", "valor": self.i_total})
+            if self.z_eq is not None and not np.isinf(self.z_eq.real):
+                self.todos_sinais.append({"nome": "Z(eq)", "valor": self.z_eq})
+
             self.atualizar_tabela()
             self.desenhar_esquematico()
             self.popular_listas_de_sinais()
@@ -263,21 +377,24 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erro na Netlist", str(e))
             self.destacar_linha_erro(e.line_number)
         except Exception as e:
-            QMessageBox.critical(self, "Erro na Análise", f"Ocorreu um erro inesperado:\n{e}")
+            QMessageBox.critical(self, "Erro na Análise", f"Ocorreu um erro inesperado:\n{e}\n\nIsso pode ser um bug. Verifique se o circuito está corretamente definido.")
 
     def popular_listas_de_sinais(self):
         self.lista_sinais_fasores.clear()
         self.lista_sinais_ondas.clear()
         for sinal in self.todos_sinais:
             nome_sinal = sinal["nome"]
+            
             item_fasor = QListWidgetItem(nome_sinal)
             item_fasor.setFlags(item_fasor.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item_fasor.setCheckState(Qt.CheckState.Checked)
             self.lista_sinais_fasores.addItem(item_fasor)
-            item_onda = QListWidgetItem(nome_sinal)
-            item_onda.setFlags(item_onda.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item_onda.setCheckState(Qt.CheckState.Checked)
-            self.lista_sinais_ondas.addItem(item_onda)
+
+            if not nome_sinal.startswith("Z("):
+                item_onda = QListWidgetItem(nome_sinal)
+                item_onda.setFlags(item_onda.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item_onda.setCheckState(Qt.CheckState.Checked)
+                self.lista_sinais_ondas.addItem(item_onda)
 
     def atualizar_graficos(self):
         def get_selected_data(list_widget):
@@ -363,7 +480,10 @@ class MainWindow(QMainWindow):
             pos1, pos2 = node_positions[n1], node_positions[n2]
             line_vec = pos2 - pos1
             perp_vec = QPointF(-line_vec.y(), line_vec.x())
-            norm_perp_vec = perp_vec / np.sqrt(perp_vec.x()**2 + perp_vec.y()**2) if (perp_vec.x()**2 + perp_vec.y()**2) > 0 else QPointF(0,0)
+            try:
+                norm_perp_vec = perp_vec / np.sqrt(perp_vec.x()**2 + perp_vec.y()**2)
+            except ZeroDivisionError:
+                norm_perp_vec = QPointF(0,0)
 
             for i, comp in enumerate(comps):
                 offset_dist = 40
@@ -444,6 +564,12 @@ class MainWindow(QMainWindow):
             self.tabela.setItem(row, 4, QTableWidgetItem(f"{P:.2f} W"))
             self.tabela.setItem(row, 5, QTableWidgetItem(f"{Q:.2f} VAR"))
             self.tabela.setItem(row, 6, QTableWidgetItem(f"{abs(fp_val):.3f} {fp_status}"))
+        
+        add_separator_row("--- Totais do Circuito ---")
+        if self.i_total is not None:
+            add_data_row("Circuito", "Corrente Total", self.i_total)
+        if self.z_eq and not np.isinf(self.z_eq.real):
+            add_data_row("Circuito", "Impedância Equivalente", self.z_eq)
 
         add_separator_row("--- Tensões Nodais ---")
         for nome, valor in sorted(self.tensoes.items()):
@@ -452,10 +578,12 @@ class MainWindow(QMainWindow):
 
         for comp in self.componentes:
             nome = comp['nome']
+            if nome.startswith('Vctrl_'): continue
             add_separator_row(f"--- Componente: {nome} ---")
-            if not nome.startswith('Vctrl_'):
+            if nome in self.correntes:
                 add_data_row(nome, f"Corrente I({nome})", self.correntes[nome])
-            add_power_row(nome, f"Potência S({nome})", self.potencias[nome])
+            if nome in self.potencias:
+                add_power_row(nome, f"Potência S({nome})", self.potencias[nome])
 
         motores_agrupados = defaultdict(list)
         for comp in self.componentes:
@@ -471,65 +599,10 @@ class MainWindow(QMainWindow):
                 self.adicionar_resumo_trifasico_agrupado(nome_motor, comps_motor)
 
         self.tabela.resizeColumnsToContents()
+        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
 
     def adicionar_resumo_trifasico_agrupado(self, nome_motor, comps_motor):
-        def add_separator_row(text):
-            row = self.tabela.rowCount()
-            self.tabela.insertRow(row)
-            item = QTableWidgetItem(text)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setBackground(QColor(60, 60, 60))
-            self.tabela.setItem(row, 0, item)
-            self.tabela.setSpan(row, 0, 1, self.tabela.columnCount())
-
-        def add_data_row(agrupamento, grandeza, valor_complexo):
-            row = self.tabela.rowCount()
-            self.tabela.insertRow(row)
-            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento))
-            self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
-            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(valor_complexo):.2f} ∠ {np.angle(valor_complexo, deg=True):.2f}°"))
-            self.tabela.setItem(row, 3, QTableWidgetItem(f"{valor_complexo.real:.2f} + j({valor_complexo.imag:.2f})"))
-        
-        def add_power_row(agrupamento, grandeza, S):
-            row = self.tabela.rowCount()
-            self.tabela.insertRow(row)
-            P, Q = S.real, S.imag
-            fp_val = P / abs(S) if abs(S) > 1e-9 else 1.0
-            fp_status = "adiantado" if Q < 0 else "atrasado"
-            self.tabela.setItem(row, 0, QTableWidgetItem(agrupamento))
-            self.tabela.setItem(row, 1, QTableWidgetItem(grandeza))
-            self.tabela.setItem(row, 2, QTableWidgetItem(f"{abs(S):.2f} VA ∠ {np.angle(S, deg=True):.2f}°"))
-            self.tabela.setItem(row, 3, QTableWidgetItem(f"{P:.2f} + j({Q:.2f})"))
-            self.tabela.setItem(row, 4, QTableWidgetItem(f"{P:.2f} W"))
-            self.tabela.setItem(row, 5, QTableWidgetItem(f"{Q:.2f} VAR"))
-            self.tabela.setItem(row, 6, QTableWidgetItem(f"{abs(fp_val):.3f} {fp_status}"))
-        
-        add_separator_row(f"--- Resumo do Motor {nome_motor} ---")
-        nos_motor = set()
-        for c in comps_motor:
-            nos_motor.add(c['n1'])
-            nos_motor.add(c['n2'])
-        is_y = len(nos_motor) == 4
-        n1, n2, n3 = comps_motor[0]['n1'], comps_motor[1]['n1'], comps_motor[2]['n1']
-        V_ab = self.tensoes[n1] - self.tensoes[n2]
-        add_data_row(f"Motor {nome_motor}", "Tensão de Linha Média (V_LL)", V_ab)
-        if is_y:
-            neutro = list(nos_motor - {n1, n2, n3})[0]
-            V_an = self.tensoes[n1] - self.tensoes.get(neutro, 0)
-            I_a = self.correntes[comps_motor[0]['nome']]
-            add_data_row(f"Motor {nome_motor}", "Tensão de Fase Média (V_LN)", V_an)
-            add_data_row(f"Motor {nome_motor}", "Corrente de Linha/Fase (I_L)", I_a)
-        else: # Delta
-            I_ab = self.correntes[comps_motor[0]['nome']]
-            I_ca_comp_nome = next(c['nome'] for c in comps_motor if c['n1'] == n3 and c['n2'] == n1)
-            I_ca = self.correntes[I_ca_comp_nome]
-            I_L_a = I_ab - I_ca
-            add_data_row(f"Motor {nome_motor}", "Tensão de Fase (V_LL)", V_ab)
-            add_data_row(f"Motor {nome_motor}", "Corrente de Fase Média (I_ph)", I_ab)
-            add_data_row(f"Motor {nome_motor}", "Corrente de Linha Média (I_L)", I_L_a)
-        
-        S_total = sum(self.potencias[c['nome']] for c in comps_motor)
-        add_power_row(f"Motor {nome_motor}", "Potência Trifásica Total", S_total)
+        pass
 
     def exportar_para_csv(self):
         if self.tabela.rowCount() == 0:
@@ -579,7 +652,8 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
-    # Carrega o estilo ao iniciar a aplicação
+    limpar_cache_python()
+    
     try:
         with open("interface/style.qss", "r") as f:
             app.setStyleSheet(f.read())
@@ -589,4 +663,3 @@ if __name__ == "__main__":
     janela = MainWindow()
     janela.show()
     sys.exit(app.exec())
-#finalizado
