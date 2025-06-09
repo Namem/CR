@@ -12,7 +12,7 @@ class NetlistParseError(Exception):
 def parse_valor_com_unidade(valor_str):
     valor_str = valor_str.lower()
     unidades = {'p': 1e-12, 'n': 1e-9, 'u': 1e-6, 'm': 1e-3, 'k': 1e3, 'meg': 1e6, 'g': 1e9, 't': 1e12}
-    match = re.match(r"^(-?\d+\.?\d*)([a-z]+)?$", valor_str) # Unidade opcional
+    match = re.match(r"^(-?\d+\.?\d*)([a-z]+)?$", valor_str)
     if match:
         valor_numerico, unidade = match.groups()
         if unidade:
@@ -39,29 +39,25 @@ def parse_netlist_linhas(linhas):
         tipo_comp = nome_comp[0].upper()
         
         try:
-            # --- NOVA LÓGICA PARA FONTES DEPENDENTES (E, G, F, H) ---
-            if tipo_comp in ['E', 'G', 'F', 'H']:
-                if len(tokens) != 6: raise NetlistParseError(f"Fonte dependente {tipo_comp} requer 6 tokens.", linha_numero)
+            if tipo_comp in ['E', 'G']: # Fontes controladas por TENSÃO
+                if len(tokens) != 6: raise NetlistParseError(f"Fonte {tipo_comp} requer 6 tokens (nome n+ n- nc+ nc- ganho).", linha_numero)
                 n_pos, n_neg = tokens[1], tokens[2]
                 nc_pos, nc_neg = tokens[3], tokens[4]
                 ganho = parse_valor_com_unidade(tokens[5])
-                
-                # Para fontes F e H, o controle é uma fonte V de 0V para medir a corrente
-                comp_controle = None
-                if tipo_comp in ['F', 'H']:
-                    comp_controle = f"Vctrl_{nome_comp}"
-
                 componentes.append({
                     "tipo": tipo_comp, "nome": nome_comp, "n1": n_pos, "n2": n_neg,
-                    "nc1": nc_pos, "nc2": nc_neg, "valor": ganho, "controle": comp_controle
+                    "nc1": nc_pos, "nc2": nc_neg, "valor": ganho
                 })
 
-                # Se for F ou H, adiciona a fonte "amperímetro" de 0V
-                if comp_controle:
-                    componentes.append({
-                        "tipo": "V", "nome": comp_controle, "n1": nc_pos, "n2": nc_neg,
-                        "valor": 0, "fase": 0
-                    })
+            elif tipo_comp in ['F', 'H']: # Fontes controladas por CORRENTE
+                if len(tokens) != 5: raise NetlistParseError(f"Fonte {tipo_comp} requer 5 tokens (nome n+ n- V_controle ganho).", linha_numero)
+                n_pos, n_neg = tokens[1], tokens[2]
+                comp_controle = tokens[3] # Nome da fonte de tensão (V) de controle
+                ganho = parse_valor_com_unidade(tokens[4])
+                componentes.append({
+                    "tipo": tipo_comp, "nome": nome_comp, "n1": n_pos, "n2": n_neg,
+                    "controle": comp_controle, "valor": ganho
+                })
 
             elif len(tokens) > 3 and tokens[3].upper() == "AC":
                 if len(tokens) < 5: raise NetlistParseError("Fonte AC requer um valor de magnitude.", linha_numero)
@@ -71,7 +67,7 @@ def parse_netlist_linhas(linhas):
                 componentes.append({
                     "tipo": "V", "nome": nome_comp, "n1": n1, "n2": n2, "valor": valor, "fase": fase
                 })
-            else:
+            else: # Componentes passivos
                 n1, n2 = tokens[1], tokens[2]
                 if len(tokens) > 4:
                     real_part = parse_valor_com_unidade(tokens[3])
@@ -89,7 +85,9 @@ def parse_netlist_linhas(linhas):
     return componentes
 
 def calcular_impedancia_motor(potencia_total_ativa, fp, ligacao='Y', tensao_fase=220):
-    p_fase = potencia_total_ativa / 3; s_fase = p_fase / fp
-    if s_fase == 0: return complex(1e12, 0)
-    theta = math.acos(fp); z_mod = (tensao_fase**2) / s_fase
+    p_fase = potencia_total_ativa / 3
+    s_fase = p_fase / fp
+    if s_fase == 0: return complex(1e12, 0) # Evita divisão por zero
+    theta = math.acos(fp)
+    z_mod = (tensao_fase**2) / s_fase
     return z_mod * complex(math.cos(theta), math.sin(theta))

@@ -4,7 +4,6 @@ import sys
 import os
 import shutil
 
-# --- FUNÇÃO DE LIMPEZA DE CACHE ---
 def limpar_cache_python():
     diretorio_atual = os.path.dirname(os.path.abspath(__file__))
     for root, dirs, files in os.walk(diretorio_atual):
@@ -16,9 +15,14 @@ def limpar_cache_python():
             except OSError as e:
                 print(f"Erro ao remover cache: {e}")
 
-# --- EXECUTA A LIMPEZA ANTES DE TUDO ---
-limpar_cache_python()
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
+limpar_cache_python()
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit,
@@ -33,8 +37,7 @@ import numpy as np
 import csv
 from collections import defaultdict, deque
 
-# Importe os módulos do projeto
-from netlist_parser import parser
+from netlist_parser.parser import parse_netlist_linhas, NetlistParseError
 from core import analise
 from interface.canvas import MplCanvas
 from graphics import fasores, ondas
@@ -47,20 +50,16 @@ from schematic.capacitor_item import CapacitorItem
 from schematic.impedance_item import ImpedanceItem
 from schematic.dependent_source_item import DependentSourceItem
 
-# --- NOVA CLASSE PARA A JANELA DE AJUDA COM ROLAGEM ---
 class HelpDialog(QDialog):
     def __init__(self, title, html_content, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumSize(600, 500)
-
         layout = QVBoxLayout(self)
-
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)
         text_edit.setHtml(html_content)
         layout.addWidget(text_edit)
-
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         button_box.accepted.connect(self.accept)
         layout.addWidget(button_box)
@@ -70,7 +69,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Choque de Realidade - Analisador CA")
         self.setGeometry(100, 100, 1200, 800)
-
         self._create_menu_bar()
         
         self.componentes = []
@@ -78,6 +76,7 @@ class MainWindow(QMainWindow):
         self.tensoes = {}
         self.correntes = {}
         self.potencias = {}
+        self.tensoes_comp = {}
         self.z_eq = None
         self.i_total = None
         self.todos_sinais = []
@@ -104,51 +103,40 @@ class MainWindow(QMainWindow):
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
-        
         menu_arquivo = menu_bar.addMenu("&Arquivo")
         abrir_action = QAction("&Abrir Netlist...", self)
         abrir_action.triggered.connect(self.abrir_arquivo)
         menu_arquivo.addAction(abrir_action)
-        
         salvar_action = QAction("&Salvar Netlist Como...", self)
         salvar_action.triggered.connect(self.salvar_arquivo_como)
         menu_arquivo.addAction(salvar_action)
-        
         menu_arquivo.addSeparator()
-        
         sair_action = QAction("&Sair", self)
         sair_action.triggered.connect(self.close)
         menu_arquivo.addAction(sair_action)
-
         menu_view = menu_bar.addMenu("&Visualizar")
-        
         tema_dracula_action = QAction("Tema Escuro (Dracula)", self)
         tema_dracula_action.triggered.connect(lambda: self.carregar_estilo("interface/style.qss"))
         menu_view.addAction(tema_dracula_action)
-        
         tema_claro_action = QAction("Tema Claro", self)
         tema_claro_action.triggered.connect(lambda: self.carregar_estilo("interface/light_style.qss"))
         menu_view.addAction(tema_claro_action)
-
         tema_ocean_action = QAction("Tema Oceano", self)
         tema_ocean_action.triggered.connect(lambda: self.carregar_estilo("interface/ocean_style.qss"))
         menu_view.addAction(tema_ocean_action)
-
         menu_ajuda = menu_bar.addMenu("&Ajuda")
-        
         guia_action = QAction("&Guia de Formato da Netlist", self)
         guia_action.triggered.connect(self.mostrar_guia_netlist)
         menu_ajuda.addAction(guia_action)
-
         menu_ajuda.addSeparator()
-
         sobre_action = QAction("&Sobre o Choque de Realidade", self)
         sobre_action.triggered.connect(self.mostrar_janela_ajuda)
         menu_ajuda.addAction(sobre_action)
 
     def carregar_estilo(self, caminho_arquivo):
         try:
-            with open(caminho_arquivo, "r") as f:
+            caminho_real = resource_path(caminho_arquivo)
+            with open(caminho_real, "r") as f:
                 self.setStyleSheet(f.read())
         except FileNotFoundError:
             print(f"Arquivo de estilo não encontrado: {caminho_arquivo}. Usando estilo padrão.")
@@ -241,7 +229,6 @@ class MainWindow(QMainWindow):
         """
         QMessageBox.about(self, titulo, texto)
 
-    # ... (O restante do arquivo main.py continua aqui, sem alterações)
     def abrir_arquivo(self):
         caminho, _ = QFileDialog.getOpenFileName(self, "Abrir Netlist", "", "Netlist Files (*.net *.txt);;All Files (*)")
         if caminho:
@@ -285,53 +272,12 @@ class MainWindow(QMainWindow):
     def setup_netlist_tab(self):
         layout = QVBoxLayout()
         self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("Use o formulário abaixo ou digite sua netlist aqui.\nEx: V1 A 0 AC 100 0\n    R1 A B 5k")
+        self.text_edit.setPlaceholderText("Digite sua netlist aqui.\nEx: V1 A 0 AC 100 0\n    R1 A B 5k")
         layout.addWidget(self.text_edit)
         btn_analisar = QPushButton("⚡ Analisar Circuito")
         btn_analisar.clicked.connect(self.analisar)
         layout.addWidget(btn_analisar)
-        layout.addWidget(QLabel("Adicionar Motor Trifásico"))
-        form = QFormLayout()
-        self.tipo_motor = QComboBox()
-        self.tipo_motor.addItems(["Estrela (Y)", "Triângulo (Δ)"])
-        self.noA = QLineEdit("A"); self.noB = QLineEdit("B"); self.noC = QLineEdit("C")
-        self.noN = QLineEdit("N"); self.potencia = QLineEdit("3000"); self.fp = QLineEdit("0.9")
-        form.addRow("Tipo de Ligação:", self.tipo_motor)
-        form.addRow("Nó A:", self.noA); form.addRow("Nó B:", self.noB); form.addRow("Nó C:", self.noC)
-        form.addRow("Nó Neutro (Y apenas):", self.noN)
-        form.addRow("Potência (W):", self.potencia)
-        form.addRow("Fator de Potência:", self.fp)
-        layout.addLayout(form)
-        btn_inserir_motor = QPushButton("➕ Inserir Motor na Netlist")
-        btn_inserir_motor.clicked.connect(self.inserir_motor_netlist)
-        layout.addWidget(btn_inserir_motor)
         self.tab_netlist.setLayout(layout)
-
-    def inserir_motor_netlist(self):
-        tipo = self.tipo_motor.currentText()
-        a = self.noA.text().strip(); b = self.noB.text().strip(); c = self.noC.text().strip()
-        n = self.noN.text().strip(); p_str = self.potencia.text().strip(); fp_val_str = self.fp.text().strip()
-        nome_motor = f"M{np.random.randint(100,999)}"
-        potencia_w = float(p_str); fp = float(fp_val_str)
-        ligacao = 'Y' if tipo.startswith("Estrela") else 'D'
-        z = parser.calcular_impedancia_motor(potencia_w, fp, ligacao=ligacao, tensao_fase=220)
-        motor_lines = []
-        if ligacao == 'Y':
-            motor_lines.append(f"Z_{nome_motor}_A {a} {n} {z.real} {z.imag}")
-            motor_lines.append(f"Z_{nome_motor}_B {b} {n} {z.real} {z.imag}")
-            motor_lines.append(f"Z_{nome_motor}_C {c} {n} {z.real} {z.imag}")
-        else: # Delta
-            motor_lines.append(f"Z_{nome_motor}_AB {a} {b} {z.real} {z.imag}")
-            motor_lines.append(f"Z_{nome_motor}_BC {b} {c} {z.real} {z.imag}")
-            motor_lines.append(f"Z_{nome_motor}_CA {c} {a} {z.real} {z.imag}")
-        fontes = [f"V_A {a} 0 AC 220 0", f"V_B {b} 0 AC 220 -120", f"V_C {c} 0 AC 220 120"]
-        extra = [f"R_N {n} 0 0.001"] if tipo.startswith("Estrela") else []
-        texto_atual = self.text_edit.toPlainText().strip().splitlines()
-        linhas_existentes = set(l.strip().split()[0] for l in texto_atual)
-        novas_linhas = [v for v in fontes if v.split()[0] not in linhas_existentes]
-        novas_linhas.extend(motor_lines)
-        novas_linhas.extend(extra)
-        self.text_edit.setText("\n".join(texto_atual + novas_linhas))
 
     def setup_resultados_tab(self):
         layout = QVBoxLayout()
@@ -352,12 +298,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Aviso", "A netlist está vazia.")
             return
         try:
-            self.componentes = parser.parse_netlist_linhas(texto.strip().split('\n'))
-            self.tensoes, self.correntes, self.potencias, self.z_eq, self.i_total = analise.montar_matriz_anm(self.componentes, self.frequencia)
+            self.componentes = parse_netlist_linhas(texto.strip().split('\n'))
+            self.tensoes, self.correntes, self.potencias, self.tensoes_comp, self.z_eq, self.i_total = analise.montar_matriz_anm(self.componentes, self.frequencia)
             
             self.todos_sinais = []
             self.todos_sinais.extend([{"nome": f"V({n})", "valor": v} for n, v in self.tensoes.items() if n != '0'])
             
+            for nome, tensao in self.tensoes_comp.items():
+                 if not nome.startswith('Vctrl_'):
+                    self.todos_sinais.append({"nome": f"V({nome})", "valor": tensao})
+
             for comp in self.componentes:
                 nome_comp = comp['nome']
                 if not nome_comp.startswith('Vctrl_') and nome_comp in self.correntes:
@@ -373,7 +323,7 @@ class MainWindow(QMainWindow):
             self.popular_listas_de_sinais()
             self.atualizar_graficos()
             self.tabs.setCurrentIndex(1)
-        except parser.NetlistParseError as e:
+        except NetlistParseError as e:
             QMessageBox.critical(self, "Erro na Netlist", str(e))
             self.destacar_linha_erro(e.line_number)
         except Exception as e:
@@ -580,6 +530,9 @@ class MainWindow(QMainWindow):
             nome = comp['nome']
             if nome.startswith('Vctrl_'): continue
             add_separator_row(f"--- Componente: {nome} ---")
+            
+            if nome in self.tensoes_comp:
+                add_data_row(nome, f"Tensão V({nome})", self.tensoes_comp[nome])
             if nome in self.correntes:
                 add_data_row(nome, f"Corrente I({nome})", self.correntes[nome])
             if nome in self.potencias:
@@ -654,11 +607,12 @@ if __name__ == "__main__":
     
     limpar_cache_python()
     
+    caminho_estilo_inicial = resource_path("interface/style.qss")
     try:
-        with open("interface/style.qss", "r") as f:
+        with open(caminho_estilo_inicial, "r") as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
-        print("Arquivo de estilo (interface/style.qss) não encontrado. Usando estilo padrão.")
+        print(f"Arquivo de estilo inicial não encontrado: {caminho_estilo_inicial}. Usando estilo padrão.")
         
     janela = MainWindow()
     janela.show()

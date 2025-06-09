@@ -46,8 +46,7 @@ def montar_matriz_anm(componentes, frequencia):
             if i1 is not None and i2 is not None:
                 A[i1, i2] -= y; A[i2, i1] -= y
         
-        # --- CORREÇÃO DE SINAL APLICADA AQUI ---
-        elif tipo == 'G': # VCCS
+        elif tipo == 'G':
             nc1, nc2, ganho = mapa_nos.get(comp['nc1']), mapa_nos.get(comp['nc2']), comp['valor']
             if i1 is not None:
                 if nc1 is not None: A[i1, nc1] -= ganho
@@ -56,7 +55,7 @@ def montar_matriz_anm(componentes, frequencia):
                 if nc1 is not None: A[i2, nc1] += ganho
                 if nc2 is not None: A[i2, nc2] -= ganho
 
-        elif tipo == 'F': # CCCS
+        elif tipo == 'F':
             ganho, comp_controle = comp['valor'], comp['controle']
             idx_v_controle = N + mapa_indices_v[comp_controle]
             if i1 is not None: A[i1, idx_v_controle] += ganho
@@ -92,49 +91,45 @@ def montar_matriz_anm(componentes, frequencia):
     V_nodal = {no: solucao[idx] for no, idx in mapa_nos.items()}; V_nodal['0'] = 0
     I_fontes_v = {todas_fontes_v[k]['nome']: -solucao[N + k] for k in range(M)}
     
-    # --- CÁLCULO DE CORRENTE PARA 'G' e 'F' ADICIONADO AQUI ---
     correntes = {}
+    potencias = {}
+    tensoes_componentes = {}
     for comp in componentes:
         nome = comp['nome']
         tipo = comp['tipo'].upper()
+        v1 = V_nodal.get(comp['n1'], 0)
+        v2 = V_nodal.get(comp['n2'], 0)
+        tensao_comp = v1 - v2
+        tensoes_componentes[nome] = tensao_comp
         
+        corrente_comp = 0
         if tipo in ['V', 'E', 'H']:
-            correntes[nome] = I_fontes_v.get(nome, 0)
-        elif tipo == 'G': # VCCS
+            corrente_comp = I_fontes_v.get(nome, 0)
+        elif tipo == 'G':
             v_control_p = V_nodal.get(comp['nc1'], 0)
             v_control_n = V_nodal.get(comp['nc2'], 0)
-            correntes[nome] = comp['valor'] * (v_control_p - v_control_n)
-        elif tipo == 'F': # CCCS
+            corrente_comp = comp['valor'] * (v_control_p - v_control_n)
+        elif tipo == 'F':
             corrente_controle = I_fontes_v.get(comp['controle'], 0)
-            correntes[nome] = comp['valor'] * corrente_controle
-        else: # R, L, C, Z
-            v1 = V_nodal.get(comp['n1'], 0)
-            v2 = V_nodal.get(comp['n2'], 0)
-            tensao_comp = v1 - v2
-            
+            corrente_comp = comp['valor'] * corrente_controle
+        else:
             Z = 0
             if tipo == 'R': Z = comp['valor']
             elif tipo == 'L': Z = 1j * w * comp['valor']
             elif tipo == 'C': Z = 1 / (1j * w * comp['valor']) if (w * comp.get('valor', 0) != 0) else np.inf
             elif tipo == 'Z': Z = comp['valor']
             
-            corrente_comp = tensao_comp / Z if (Z != 0 and not np.isinf(Z)) else 0
-            correntes[nome] = corrente_comp
-    
-    potencias = {}
-    for comp in componentes:
-        nome = comp['nome']
-        v1 = V_nodal.get(comp['n1'], 0)
-        v2 = V_nodal.get(comp['n2'], 0)
-        tensao_comp = v1 - v2
-        potencias[nome] = tensao_comp * np.conj(correntes.get(nome, 0))
+            if Z != 0 and not np.isinf(Z):
+                corrente_comp = tensao_comp / Z
+        
+        correntes[nome] = corrente_comp
+        potencias[nome] = tensao_comp * np.conj(corrente_comp)
 
     Z_equivalente = None
     I_total = None
     if fontes_v_indep:
         fonte_principal = fontes_v_indep[0]
         I_total = correntes.get(fonte_principal['nome'])
-
         if I_total and abs(I_total) > 1e-12:
             fase_rad = np.deg2rad(fonte_principal.get("fase", 0.0))
             V_fonte = fonte_principal['valor'] * np.exp(1j * fase_rad)
@@ -142,4 +137,4 @@ def montar_matriz_anm(componentes, frequencia):
         else:
             Z_equivalente = complex(np.inf, np.inf)
 
-    return V_nodal, correntes, potencias, Z_equivalente, I_total
+    return V_nodal, correntes, potencias, tensoes_componentes, Z_equivalente, I_total
